@@ -69,6 +69,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Grid.Column="0">
@@ -103,6 +104,10 @@
                             <TextBlock Text="横向最大宽度"/>
                             <TextBox x:Name="MaxStageWidthBox"/>
                         </StackPanel>
+                        <CheckBox x:Name="OnlySuperChatBox"
+                                  Grid.Row="4"
+                                  Grid.ColumnSpan="3"
+                                  Content="仅显示醒目留言"/>
                     </Grid>
                 </GroupBox>
 

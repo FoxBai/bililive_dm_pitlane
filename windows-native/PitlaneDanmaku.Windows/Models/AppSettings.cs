@@ -17,6 +17,7 @@ public sealed class AppSettings
     public int MaxMessageLength { get; set; } = 42;
     public int MaxRepeatCharacters { get; set; } = 4;
     public int MaxStageWidth { get; set; } = 3840;
+    public bool OnlySuperChat { get; set; }
 
     public AppSettings Clone()
     {
@@ -33,7 +34,8 @@ public sealed class AppSettings
             MaxNicknameLength = MaxNicknameLength,
             MaxMessageLength = MaxMessageLength,
             MaxRepeatCharacters = MaxRepeatCharacters,
-            MaxStageWidth = MaxStageWidth
+            MaxStageWidth = MaxStageWidth,
+            OnlySuperChat = OnlySuperChat
         };
     }
 
@@ -41,7 +43,7 @@ public sealed class AppSettings
     {
         UserAgent = string.IsNullOrWhiteSpace(UserAgent) ? DefaultUserAgent : UserAgent.Trim();
         RoomInput = RoomInput.Trim();
-        Cookie = Cookie.Trim();
+        Cookie = NormalizeCookieInput(Cookie);
         Buvid3 = string.IsNullOrWhiteSpace(Buvid3) ? GenerateBuvid3() : Buvid3.Trim();
         ObsPort = Math.Clamp(ObsPort, 1024, 65535);
         LaunchIntervalMs = Math.Clamp(LaunchIntervalMs, 120, 10000);
@@ -56,5 +58,48 @@ public sealed class AppSettings
     private static string GenerateBuvid3()
     {
         return Guid.NewGuid().ToString().ToUpperInvariant() + "infoc";
+    }
+
+    private static string NormalizeCookieInput(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        var text = value.Trim();
+        var lines = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var cookieLine = lines.FirstOrDefault(line => line.StartsWith("Cookie:", StringComparison.OrdinalIgnoreCase));
+        if (cookieLine is not null)
+        {
+            return CleanCookieValue(cookieLine[("Cookie:".Length)..]);
+        }
+
+        var embeddedCookieIndex = text.IndexOf("Cookie:", StringComparison.OrdinalIgnoreCase);
+        if (embeddedCookieIndex >= 0)
+        {
+            var cookieValue = text[(embeddedCookieIndex + "Cookie:".Length)..];
+            var lineEnd = cookieValue.IndexOfAny(['\r', '\n']);
+            if (lineEnd >= 0)
+            {
+                cookieValue = cookieValue[..lineEnd];
+            }
+
+            return CleanCookieValue(cookieValue);
+        }
+
+        return CleanCookieValue(text);
+    }
+
+    private static string CleanCookieValue(string value)
+    {
+        return value
+            .Trim()
+            .Trim('"', '\'', '`', '\\')
+            .Trim()
+            .TrimEnd(';');
     }
 }

@@ -20,6 +20,7 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
     private static readonly Uri RoomInitEndpoint = new("https://api.live.bilibili.com/room/v1/Room/room_init");
     private static readonly Uri DanmuInfoEndpoint = new("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo");
     private static readonly Uri HistoryEndpoint = new("https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory");
+    private static readonly Uri FingerprintEndpoint = new("https://api.bilibili.com/x/frontend/finger/spi");
     private static readonly Uri WbiNavEndpoint = new("https://api.bilibili.com/x/web-interface/nav");
     private static readonly int[] WbiMixinKeyTable =
     [
@@ -47,6 +48,7 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
     private DateTimeOffset _lastRealtimeMessageAt = DateTimeOffset.MinValue;
     private long _realtimeMessageCount;
     private bool _historyPollWarned;
+    private bool _maskedNameWarned;
     private CancellationTokenSource? _runCancellation;
     private Task? _runTask;
 
@@ -97,6 +99,12 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
 
     private async Task RunAsync(AppSettings settings, CancellationToken cancellationToken)
     {
+        await RefreshGeneratedBuvid3Async(settings, cancellationToken);
+        if (ExtractCredentialUid(settings.Cookie) is not null)
+        {
+            _log.Info("已检测到登录 Cookie，将使用登录 uid 进行弹幕握手。");
+        }
+
         var roomId = await ResolveRoomIdAsync(settings, cancellationToken);
         using var historyCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var historyTask = Task.Run(
@@ -272,12 +280,23 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
                 else if (freshMessages.Count > 0 &&
                          DateTimeOffset.UtcNow - _lastRealtimeMessageAt > TimeSpan.FromSeconds(6))
                 {
+                    var displayedCount = 0;
                     foreach (var message in freshMessages)
                     {
-                        MessageReceived?.Invoke(message);
+                        var resolvedMessage = ResolveCachedName(message);
+                        if (LooksMasked(resolvedMessage.UserName))
+                        {
+                            continue;
+                        }
+
+                        MessageReceived?.Invoke(resolvedMessage);
+                        displayedCount++;
                     }
 
-                    _log.Info($"历史弹幕补偿显示 {freshMessages.Count} 条。");
+                    if (displayedCount > 0)
+                    {
+                        _log.Info($"历史弹幕补偿显示 {displayedCount} 条。");
+                    }
                 }
 
                 _historyPollWarned = false;
@@ -315,6 +334,45 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
         ThrowIfBilibiliApiFailed(document.RootElement, "历史弹幕");
         return BilibiliMessageParser.ParseHistoryMessages(document.RootElement);
+    }
+
+    private async Task RefreshGeneratedBuvid3Async(AppSettings settings, CancellationToken cancellationToken)
+    {
+        if (CookieContains(settings.Cookie.Trim(), "buvid3") ||
+            (!string.IsNullOrWhiteSpace(settings.Buvid3) && !LooksLocallyGeneratedBuvid3(settings.Buvid3)))
+        {
+            return;
+        }
+
+        try
+        {
+            using var request = CreateRequest(FingerprintEndpoint, settings);
+            request.Headers.Referrer = new Uri("https://www.bilibili.com/");
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+            ThrowIfBilibiliApiFailed(document.RootElement, "buvid3");
+
+            if (document.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("b_3", out var buvidElement) &&
+                buvidElement.ValueKind == JsonValueKind.String)
+            {
+                var buvid3 = buvidElement.GetString();
+                if (!string.IsNullOrWhiteSpace(buvid3))
+                {
+                    settings.Buvid3 = buvid3.Trim();
+                    _log.Info("已获取 B站网页 buvid3，用于直播弹幕握手。");
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"获取 B站 buvid3 失败：{ex.Message}。将继续使用当前 buvid3。");
+        }
     }
 
     private IReadOnlyList<ChatMessage> MarkFreshHistoryMessages(IReadOnlyList<ChatMessage> messages)
@@ -773,6 +831,18 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
 
     private void PublishWithNameCache(ChatMessage message)
     {
+        message = ResolveCachedName(message);
+        if (LooksMasked(message.UserName))
+        {
+            WarnMaskedNameSuppressed();
+            return;
+        }
+
+        MessageReceived?.Invoke(message);
+    }
+
+    private ChatMessage ResolveCachedName(ChatMessage message)
+    {
         if (message.UserId is { } uid)
         {
             if (!LooksMasked(message.UserName))
@@ -785,7 +855,7 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
             }
         }
 
-        MessageReceived?.Invoke(message);
+        return message;
     }
 
     private HttpRequestMessage CreateRequest(Uri url, AppSettings settings, int? roomId = null)
@@ -818,6 +888,11 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
             return cookie;
         }
 
+        if (string.IsNullOrWhiteSpace(settings.Buvid3))
+        {
+            return cookie;
+        }
+
         var buvidCookie = $"buvid3={settings.Buvid3}";
         return string.IsNullOrWhiteSpace(cookie)
             ? buvidCookie
@@ -831,14 +906,31 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
             .Any(part => part.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static long? ExtractCredentialUid(string cookie)
+    {
+        foreach (var part in cookie.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var pieces = part.Split('=', 2, StringSplitOptions.TrimEntries);
+            if (pieces.Length == 2 &&
+                pieces[0].Equals("DedeUserID", StringComparison.OrdinalIgnoreCase) &&
+                long.TryParse(pieces[1], out var uid))
+            {
+                return uid;
+            }
+        }
+
+        return null;
+    }
+
     private static byte[] BuildAuthPacket(AppSettings settings, int roomId, string token)
     {
+        var credentialUid = ExtractCredentialUid(settings.Cookie);
         var auth = new
         {
-            uid = 0,
+            uid = credentialUid ?? 0,
             roomid = roomId,
             protover = 3,
-            platform = "web",
+            platform = "danmuji",
             type = 2,
             key = token,
             buvid = settings.Buvid3
@@ -923,14 +1015,35 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         throw new InvalidOperationException($"B站{label}接口返回错误 {code}：{message}");
     }
 
+    private void WarnMaskedNameSuppressed()
+    {
+        if (_maskedNameWarned)
+        {
+            return;
+        }
+
+        _maskedNameWarned = true;
+        _log.Warn("收到 B站返回的脱敏昵称，已跳过该条弹幕；如仍频繁出现，请填写登录后的网页 Cookie。");
+    }
+
     private static bool LooksMasked(string userName)
     {
-        return userName.Contains("***", StringComparison.Ordinal) ||
-               userName.Contains("****", StringComparison.Ordinal);
+        userName = userName.Trim();
+        var firstStar = userName.IndexOf('*');
+        return firstStar > 0 &&
+               userName.AsSpan(firstStar).IndexOfAnyExcept('*') < 0;
+    }
+
+    private static bool LooksLocallyGeneratedBuvid3(string buvid3)
+    {
+        return LocalBuvid3Pattern().IsMatch(buvid3.Trim());
     }
 
     [GeneratedRegex(@"(?:^|live\.bilibili\.com/(?:blanc/)?)(?<id>\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex RoomIdPattern();
+
+    [GeneratedRegex(@"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}infoc$")]
+    private static partial Regex LocalBuvid3Pattern();
 
     private sealed record WbiKeys(string MixinKey);
 }

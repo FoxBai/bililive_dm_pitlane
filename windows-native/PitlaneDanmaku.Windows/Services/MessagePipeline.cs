@@ -29,6 +29,10 @@ public sealed class MessagePipeline : IDisposable
         {
             _settings = settings.Clone();
             _settings.Normalize();
+            if (_settings.OnlySuperChat)
+            {
+                _normalQueue.Clear();
+            }
         }
     }
 
@@ -55,6 +59,11 @@ public sealed class MessagePipeline : IDisposable
 
         normalized = TextSanitizer.Normalize(message, settings);
         if (normalized is null)
+        {
+            return;
+        }
+
+        if (settings.OnlySuperChat && !normalized.IsSuperChat)
         {
             return;
         }

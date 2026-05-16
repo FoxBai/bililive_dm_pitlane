@@ -260,6 +260,7 @@ public partial class MainWindow : Window
         _settings.MaxMessageLength = ReadInt(MessageLengthBox.Text, _settings.MaxMessageLength);
         _settings.MaxRepeatCharacters = ReadInt(RepeatLimitBox.Text, _settings.MaxRepeatCharacters);
         _settings.MaxStageWidth = ReadInt(MaxStageWidthBox.Text, _settings.MaxStageWidth);
+        _settings.OnlySuperChat = OnlySuperChatBox.IsChecked == true;
         _settings.Normalize();
 
         _pipeline.UpdateSettings(_settings);
@@ -309,6 +310,7 @@ public partial class MainWindow : Window
         MessageLengthBox.Text = _settings.MaxMessageLength.ToString();
         RepeatLimitBox.Text = _settings.MaxRepeatCharacters.ToString();
         MaxStageWidthBox.Text = _settings.MaxStageWidth.ToString();
+        OnlySuperChatBox.IsChecked = _settings.OnlySuperChat;
     }
 
     private static int ReadInt(string value, int fallback)
