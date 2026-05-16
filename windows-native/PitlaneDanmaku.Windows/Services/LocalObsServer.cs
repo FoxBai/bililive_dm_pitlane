@@ -386,7 +386,7 @@ public sealed class LocalObsServer : IDisposable
       align-items: center;
       font-size: {{OverlayLayout.NameFontSize}}px;
       line-height: 1;
-      font-weight: 800;
+      font-weight: 900;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;

@@ -132,7 +132,7 @@ public partial class OverlayWindow : Window
             FontFamily = EmbeddedFonts.HarmonySansSc,
             Foreground = Brushes.White,
             FontSize = OverlayLayout.NameFontSize,
-            FontWeight = FontWeights.ExtraBold,
+            FontWeight = FontWeights.Black,
             TextTrimming = TextTrimming.CharacterEllipsis,
             MaxWidth = message.IsSuperChat ? OverlayLayout.SuperChatNameWidth : OverlayLayout.NameWidth,
             Effect = Shadow()
