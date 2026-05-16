@@ -1,30 +1,90 @@
-bililive_dm
-=======
+# bililive_dm_pitlane
 
-[![Build status](https://ci.appveyor.com/api/projects/status/4ung75nx9remwc7j?svg=true&passingText=%E7%BC%96%E8%AF%91%20-%20%E7%A8%B3%20&pendingText=%E5%B0%8F%E5%9C%9F%E8%B1%86%E7%82%B8%E4%BA%86%20&failingText=%E6%88%91%E6%84%9F%E8%A7%89%E5%8D%9C%E8%A1%8C%20)](https://ci.appveyor.com/project/copyliu/bililive-dm) [![Crowdin](https://badges.crowdin.net/bililivedm/localized.svg)](https://crowdin.com/project/bililivedm)
+`bililive_dm_pitlane` 是基于 [copyliu/bililive_dm](https://github.com/copyliu/bililive_dm) 创建的 Pitlane 分支，目标是把 B站直播评论包装成赛车 / pit lane 风格的透明叠加画面，并提供 Windows 原生应用。
 
-[![爱发电](https://pic1.afdiancdn.com/static/img/welcome/button-sponsorme.png)](https://ifdian.net/a/copyliu)
+当前仓库保留 `bililive_dm` 的历史代码和授权文件，在此基础上新增 `windows-native/PitlaneDanmaku.Windows`。Windows 版本使用 WPF / .NET 8，不沿用 Electron，也不直接复用 `FoxBai/pitlane_danmaku` 旧 Windows 实现；赛车和评论框素材来自 Pitlane 项目素材目录。
 
-这是一个奇妙B站直播間彈幕工具. WTFPL授權.
+## 当前能力
 
-根據B站官方統計, 本工具30天使用主播超過25萬. 是B站直播間彈幕工具中最老牌的.
+- B站直播间 ID / URL 直连。
+- 使用网页端弹幕服务器信息，优先走原始 TCP 弹幕通道。
+- 鉴权字段使用 `protover: 3`，支持 brotli、zlib / deflate、嵌套包和连续 JSON 消息解析。
+- 支持普通评论和 SuperChat / 醒目留言。
+- 评论清洗、重复消息去重、等待队列限流、醒目留言优先发车。
+- 本地 OBS 浏览器源：`http://127.0.0.1:17333/overlay`。
+- Windows 桌面透明置顶悬浮窗。
+- 本地普通评论、醒目留言和连发测试按钮。
+- 随机赛车素材、横向接续队列、底部透明 overlay 展示。
 
+## Windows 原生应用
 
-[![Star History Chart](https://api.star-history.com/svg?repos=copyliu/bililive_dm&type=Date)](https://star-history.com/#copyliu/bililive_dm&Date)
+项目路径：
 
+```powershell
+windows-native\PitlaneDanmaku.Windows
+```
 
-安裝
-=======
+本地构建：
 
-[请点击此链接安装](https://soft.ceve-market.org/bilibili_dm/Bililive_dm.application) 
+```powershell
+cd windows-native\PitlaneDanmaku.Windows
+dotnet restore
+dotnet build -c Debug
+dotnet run
+```
 
-翻譯
-=======
-日本語: 大場加奈子 [@komoechan](https://twitter.com/komoechan)
+发布：
 
-English: [TigerSHe1998](https://github.com/TigerSHe1998) 大場加奈子([@komoechan](https://twitter.com/komoechan))
+```powershell
+cd windows-native\PitlaneDanmaku.Windows
+dotnet publish -c Release
+```
 
-插件開發
-=======
-請見 [弹幕姬插件开发](https://github.com/copyliu/bililive_dm/wiki/%E5%BC%B9%E5%B9%95%E5%A7%AC%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91)
+启动后可以在控制台中填写：
 
+- 直播间 ID 或 B站直播间 URL。
+- 可选网页 Cookie，用于遇到风控时补充登录态。
+- 可选 `buvid3`。
+- OBS 端口、发车间隔、队列上限、同屏最少组数、文本长度等显示参数。
+
+OBS 中添加浏览器源并填写：
+
+```text
+http://127.0.0.1:17333/overlay
+```
+
+浏览器源背景保持透明，适合叠加到直播画面上。
+
+## 素材
+
+素材位于 `assets/`：
+
+- `assets/cars/`：赛车 PNG 和 `cars.json` 清单。
+- `assets/comment-box/`：评论框 PNG / SVG。
+- `assets/icon.svg`：项目图标素材。
+
+Windows 工程会在构建时把 `assets/` 复制到输出目录的 `Assets/` 下，OBS 本地服务和桌面悬浮窗共用同一份素材。
+
+## 结构
+
+```text
+windows-native/PitlaneDanmaku.Windows/
+  Models/                 数据模型和配置
+  Services/               B站连接、消息管线、OBS 服务、素材加载
+  OverlayWindow.xaml      桌面透明悬浮窗
+  MainWindow.xaml         Windows 控制台界面
+```
+
+关键文件：
+
+- `Services/BilibiliWebRoomClient.cs`：B站直播间直连、弹幕 TCP 协议、压缩包拆包。
+- `Services/BilibiliMessageParser.cs`：`DANMU_MSG` 和 `SUPER_CHAT_MESSAGE` 解析。
+- `Services/MessagePipeline.cs`：评论清洗、去重、限流和醒目留言优先队列。
+- `Services/LocalObsServer.cs`：本地 OBS 浏览器源、SSE 推送和素材服务。
+- `OverlayWindow.xaml.cs`：Windows 桌面透明悬浮窗渲染。
+
+## 授权与来源
+
+本仓库基于 `copyliu/bililive_dm` 创建，原项目使用 WTFPL 授权，授权文件保留在 `LICENSE.txt`。新增 Pitlane 分支代码和素材遵守同一仓库授权发布；若后续直接引用第三方实现片段，需要在对应文件中补充来源和授权说明。
+
+更多来源说明见 `NOTICE.md`。

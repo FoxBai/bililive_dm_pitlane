@@ -1,0 +1,72 @@
+[
+  {
+    "id": "car_01",
+    "file": "/cars/car_01.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 555,
+    "height": 215
+  },
+  {
+    "id": "car_02",
+    "file": "/cars/car_02.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 531,
+    "height": 215
+  },
+  {
+    "id": "car_03",
+    "file": "/cars/car_03.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 562,
+    "height": 209
+  },
+  {
+    "id": "car_04",
+    "file": "/cars/car_04.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 555,
+    "height": 209
+  },
+  {
+    "id": "car_05",
+    "file": "/cars/car_05.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 585,
+    "height": 200
+  },
+  {
+    "id": "car_06",
+    "file": "/cars/car_06.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 556,
+    "height": 201
+  },
+  {
+    "id": "car_07",
+    "file": "/cars/car_07.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 570,
+    "height": 203
+  },
+  {
+    "id": "car_08",
+    "file": "/cars/car_08.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 556,
+    "height": 202
+  },
+  {
+    "id": "car_09",
+    "file": "/cars/car_09.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 591,
+    "height": 206
+  },
+  {
+    "id": "car_10",
+    "file": "/cars/car_10.png",
+    "source": "ChatGPT Image 2026年5月12日 15_30_17.png",
+    "width": 595,
+    "height": 207
+  }
+]

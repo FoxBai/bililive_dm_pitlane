@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c1d24"/>
+      <stop offset="0.36" stop-color="#15161c"/>
+      <stop offset="1" stop-color="#101116"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="0.34" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft-shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="900" fill="none"/>
+  <rect x="24" y="38" width="1232" height="838" rx="34" fill="url(#panel)" filter="url(#soft-shadow)"/>
+  <rect x="24" y="38" width="1232" height="838" rx="34" fill="url(#shine)"/>
+  <rect x="24" y="38" width="1232" height="838" rx="34" fill="none" stroke="#454850" stroke-width="11"/>
+  <rect x="35" y="49" width="1210" height="816" rx="26" fill="none" stroke="#050509" stroke-width="3" opacity="0.8"/>
+  <text x="1150" y="190" text-anchor="end" fill="#ffffff" font-family="Arial Black, Impact, sans-serif" font-size="122" font-weight="900">RADIO</text>
+  <rect x="28" y="247" width="1224" height="10" fill="#ffffff"/>
+</svg>

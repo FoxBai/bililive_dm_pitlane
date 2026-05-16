@@ -1,0 +1,14 @@
+<Window x:Class="PitlaneDanmaku.Windows.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pitlane Danmaku Overlay"
+        Width="1280"
+        Height="420"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="CanResizeWithGrip">
+    <Canvas x:Name="StageCanvas" Background="Transparent"/>
+</Window>
