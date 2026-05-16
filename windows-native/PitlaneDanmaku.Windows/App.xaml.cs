@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 
 namespace PitlaneDanmaku.Windows;
@@ -6,16 +7,42 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        base.OnStartup(e);
+
         DispatcherUnhandledException += (_, args) =>
         {
-            MessageBox.Show(
-                args.Exception.Message,
-                "Pitlane Danmaku 遇到未处理异常",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+            ReportStartupFailure(args.Exception);
             args.Handled = true;
+            Shutdown(1);
         };
 
-        base.OnStartup(e);
+        try
+        {
+            var window = new MainWindow();
+            MainWindow = window;
+            window.Show();
+        }
+        catch (Exception ex)
+        {
+            ReportStartupFailure(ex);
+            Shutdown(1);
+        }
+    }
+
+    private static void ReportStartupFailure(Exception ex)
+    {
+        var directory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PitlaneDanmaku");
+        Directory.CreateDirectory(directory);
+
+        var path = Path.Combine(directory, "startup-error.txt");
+        File.WriteAllText(path, ex.ToString());
+
+        MessageBox.Show(
+            $"{ex.Message}{Environment.NewLine}{Environment.NewLine}{path}",
+            "Pitlane Danmaku startup error",
+            MessageBoxButton.OK,
+            MessageBoxImage.Error);
     }
 }

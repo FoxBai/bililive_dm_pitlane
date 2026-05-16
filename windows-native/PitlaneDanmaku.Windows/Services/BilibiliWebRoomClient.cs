@@ -1,12 +1,16 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using PitlaneDanmaku.Windows.Models;
 
 namespace PitlaneDanmaku.Windows.Services;
@@ -15,10 +19,34 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
 {
     private static readonly Uri RoomInitEndpoint = new("https://api.live.bilibili.com/room/v1/Room/room_init");
     private static readonly Uri DanmuInfoEndpoint = new("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo");
+    private static readonly Uri HistoryEndpoint = new("https://api.live.bilibili.com/xlive/web-room/v1/dM/gethistory");
+    private static readonly Uri WbiNavEndpoint = new("https://api.bilibili.com/x/web-interface/nav");
+    private static readonly int[] WbiMixinKeyTable =
+    [
+        46, 47, 18, 2, 53, 8, 23, 32,
+        15, 50, 10, 31, 58, 3, 45, 35,
+        27, 43, 5, 49, 33, 9, 42, 19,
+        29, 28, 14, 39, 12, 38, 41, 13,
+        37, 48, 7, 16, 24, 55, 40, 61,
+        26, 17, 0, 1, 60, 51, 30, 4,
+        22, 25, 54, 21, 56, 59, 6, 63,
+        57, 62, 11, 36, 20, 34, 44, 52
+    ];
+    private static readonly IReadOnlyList<DanmakuHost> DefaultHosts =
+    [
+        new("broadcastlv.chat.bilibili.com", 2243, 2244, 443)
+    ];
 
     private readonly HttpClient _httpClient = new();
     private readonly LogService _log;
     private readonly Dictionary<long, string> _nameCache = [];
+    private readonly object _historyGate = new();
+    private readonly HashSet<string> _historySeenIds = [];
+    private WbiKeys? _wbiKeys;
+    private DateTimeOffset _wbiKeysFetchedAt;
+    private DateTimeOffset _lastRealtimeMessageAt = DateTimeOffset.MinValue;
+    private long _realtimeMessageCount;
+    private bool _historyPollWarned;
     private CancellationTokenSource? _runCancellation;
     private Task? _runTask;
 
@@ -44,7 +72,7 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
             }
             catch (OperationCanceledException) when (runCancellation.IsCancellationRequested)
             {
-                // 用户主动断开时不作为错误显示。
+                // User requested disconnect.
             }
             catch (Exception ex)
             {
@@ -70,34 +98,69 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
     private async Task RunAsync(AppSettings settings, CancellationToken cancellationToken)
     {
         var roomId = await ResolveRoomIdAsync(settings, cancellationToken);
-        var (token, hosts) = await GetDanmuInfoAsync(settings, roomId, cancellationToken);
-        _log.Info($"B站真实房间号：{roomId}，可用弹幕服务器：{hosts.Count} 个。");
+        using var historyCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var historyTask = Task.Run(
+            () => HistoryPollingLoopAsync(settings, roomId, historyCancellation.Token),
+            historyCancellation.Token);
 
-        while (!cancellationToken.IsCancellationRequested)
+        try
         {
-            foreach (var host in hosts)
+            string token;
+            IReadOnlyList<DanmakuHost> hosts;
+            try
             {
-                try
-                {
-                    await ConnectAndReadAsync(settings, roomId, token, host, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _log.Warn($"弹幕服务器 {host.Host}:{host.Port} 断开：{ex.Message}");
-                }
-
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
+                (token, hosts) = await GetDanmuInfoAsync(settings, roomId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                token = "";
+                hosts = DefaultHosts;
+                _log.Warn($"获取 B站弹幕服务器列表失败：{ex.Message}。将尝试默认 WSS 节点；如仍失败，请填写网页 Cookie 后重试。");
             }
 
-            _log.Warn("全部弹幕服务器都已断开，5 秒后重连。");
-            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            _log.Info($"B站真实房间号：{roomId}，可用弹幕服务器：{hosts.Count} 个。");
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                foreach (var host in hosts)
+                {
+                    try
+                    {
+                        await ConnectAndReadAsync(settings, roomId, token, host, cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"弹幕服务器 {host.Host} 断开：{ex.Message}");
+                    }
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                }
+
+                _log.Warn("全部弹幕服务器都已断开，5 秒后重连。");
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+        }
+        finally
+        {
+            historyCancellation.Cancel();
+            try
+            {
+                await historyTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
         }
     }
 
@@ -119,6 +182,7 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        ThrowIfBilibiliApiFailed(document.RootElement, "房间初始化");
 
         if (document.RootElement.TryGetProperty("data", out var data) &&
             data.TryGetProperty("room_id", out var realRoomId) &&
@@ -135,15 +199,26 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         int roomId,
         CancellationToken cancellationToken)
     {
+        var query = await BuildWbiSignedQueryAsync(
+            settings,
+            new Dictionary<string, string>
+            {
+                ["id"] = roomId.ToString(CultureInfo.InvariantCulture),
+                ["type"] = "0",
+                ["web_location"] = "444.8"
+            },
+            cancellationToken);
+
         var url = new UriBuilder(DanmuInfoEndpoint)
         {
-            Query = $"id={roomId}&type=0"
+            Query = query
         }.Uri;
 
-        using var request = CreateRequest(url, settings);
+        using var request = CreateRequest(url, settings, roomId);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        ThrowIfBilibiliApiFailed(document.RootElement, "弹幕服务器信息");
 
         if (!document.RootElement.TryGetProperty("data", out var data))
         {
@@ -177,7 +252,258 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         return (token, hosts);
     }
 
+    private async Task HistoryPollingLoopAsync(
+        AppSettings settings,
+        int roomId,
+        CancellationToken cancellationToken)
+    {
+        var seeded = false;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var messages = await GetHistoryMessagesAsync(settings, roomId, cancellationToken);
+                var freshMessages = MarkFreshHistoryMessages(messages);
+                if (!seeded)
+                {
+                    seeded = true;
+                    _log.Info("历史弹幕补偿轮询已就绪。");
+                }
+                else if (freshMessages.Count > 0 &&
+                         DateTimeOffset.UtcNow - _lastRealtimeMessageAt > TimeSpan.FromSeconds(6))
+                {
+                    foreach (var message in freshMessages)
+                    {
+                        MessageReceived?.Invoke(message);
+                    }
+
+                    _log.Info($"历史弹幕补偿显示 {freshMessages.Count} 条。");
+                }
+
+                _historyPollWarned = false;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (!_historyPollWarned)
+                {
+                    _log.Warn($"历史弹幕补偿轮询失败：{ex.Message}");
+                    _historyPollWarned = true;
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+        }
+    }
+
+    private async Task<IReadOnlyList<ChatMessage>> GetHistoryMessagesAsync(
+        AppSettings settings,
+        int roomId,
+        CancellationToken cancellationToken)
+    {
+        var url = new UriBuilder(HistoryEndpoint)
+        {
+            Query = $"roomid={roomId}&room_type=0"
+        }.Uri;
+
+        using var request = CreateRequest(url, settings, roomId);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+        ThrowIfBilibiliApiFailed(document.RootElement, "历史弹幕");
+        return BilibiliMessageParser.ParseHistoryMessages(document.RootElement);
+    }
+
+    private IReadOnlyList<ChatMessage> MarkFreshHistoryMessages(IReadOnlyList<ChatMessage> messages)
+    {
+        var freshMessages = new List<ChatMessage>();
+        lock (_historyGate)
+        {
+            foreach (var message in messages.Reverse())
+            {
+                if (_historySeenIds.Add(message.Id))
+                {
+                    freshMessages.Add(message);
+                }
+            }
+
+            if (_historySeenIds.Count > 500)
+            {
+                _historySeenIds.RemoveWhere(id => _historySeenIds.Count > 400 && !freshMessages.Any(message => message.Id == id));
+            }
+        }
+
+        return freshMessages;
+    }
+
+    private async Task<string> BuildWbiSignedQueryAsync(
+        AppSettings settings,
+        IReadOnlyDictionary<string, string> parameters,
+        CancellationToken cancellationToken)
+    {
+        var keys = await GetWbiKeysAsync(settings, cancellationToken);
+        var signedParameters = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var parameter in parameters)
+        {
+            signedParameters[parameter.Key] = parameter.Value;
+        }
+
+        signedParameters["wts"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+
+        var unsignedQuery = BuildQueryString(signedParameters);
+        var signature = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(unsignedQuery + keys.MixinKey)))
+            .ToLowerInvariant();
+        signedParameters["w_rid"] = signature;
+        return BuildQueryString(signedParameters);
+    }
+
+    private async Task<WbiKeys> GetWbiKeysAsync(AppSettings settings, CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (_wbiKeys is { } cached && now - _wbiKeysFetchedAt < TimeSpan.FromHours(6))
+        {
+            return cached;
+        }
+
+        using var request = CreateRequest(WbiNavEndpoint, settings);
+        request.Headers.Referrer = new Uri("https://www.bilibili.com/");
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+
+        if (!document.RootElement.TryGetProperty("data", out var data) ||
+            !data.TryGetProperty("wbi_img", out var wbiImg))
+        {
+            throw new InvalidOperationException("B站 WBI key 接口缺少 data.wbi_img 字段。");
+        }
+
+        var imgKey = ExtractWbiKey(wbiImg, "img_url");
+        var subKey = ExtractWbiKey(wbiImg, "sub_url");
+        var mixinKey = BuildMixinKey(imgKey + subKey);
+        _wbiKeys = new WbiKeys(mixinKey);
+        _wbiKeysFetchedAt = now;
+        return _wbiKeys;
+    }
+
+    private static string ExtractWbiKey(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(property.GetString()))
+        {
+            throw new InvalidOperationException($"B站 WBI key 接口缺少 {propertyName}。");
+        }
+
+        var url = property.GetString()!;
+        var fileName = Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            throw new InvalidOperationException($"B站 WBI key {propertyName} 无法解析。");
+        }
+
+        return fileName;
+    }
+
+    private static string BuildMixinKey(string rawKey)
+    {
+        var builder = new StringBuilder(32);
+        foreach (var index in WbiMixinKeyTable.Take(32))
+        {
+            if (index >= rawKey.Length)
+            {
+                throw new InvalidOperationException("B站 WBI key 长度异常。");
+            }
+
+            builder.Append(rawKey[index]);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string BuildQueryString(IEnumerable<KeyValuePair<string, string>> parameters)
+    {
+        return string.Join("&", parameters.Select(pair =>
+            $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(FilterWbiValue(pair.Value))}"));
+    }
+
+    private static string FilterWbiValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "";
+        }
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            if (ch is not ('!' or '\'' or '(' or ')' or '*'))
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return builder.ToString();
+    }
+
     private async Task ConnectAndReadAsync(
+        AppSettings settings,
+        int roomId,
+        string token,
+        DanmakuHost host,
+        CancellationToken cancellationToken)
+    {
+        Exception? lastError = null;
+
+        if (host.SecureWebSocketPort > 0)
+        {
+            try
+            {
+                await ConnectAndReadWebSocketAsync(settings, roomId, token, host, useTls: true, cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                _log.Warn($"WSS 弹幕服务器 {host.Host}:{host.SecureWebSocketPort} 连接失败：{ex.Message}");
+            }
+        }
+
+        if (host.WebSocketPort > 0)
+        {
+            try
+            {
+                await ConnectAndReadWebSocketAsync(settings, roomId, token, host, useTls: false, cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                _log.Warn($"WS 弹幕服务器 {host.Host}:{host.WebSocketPort} 连接失败：{ex.Message}");
+            }
+        }
+
+        try
+        {
+            await ConnectAndReadTcpAsync(settings, roomId, token, host, cancellationToken);
+        }
+        catch (Exception ex) when (lastError is not null && ex is not OperationCanceledException)
+        {
+            throw new InvalidOperationException($"{lastError.Message}; TCP fallback: {ex.Message}", ex);
+        }
+    }
+
+    private async Task ConnectAndReadTcpAsync(
         AppSettings settings,
         int roomId,
         string token,
@@ -188,36 +514,65 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         await client.ConnectAsync(host.Host, host.Port, cancellationToken);
         await using var stream = client.GetStream();
 
-        _log.Info($"已连接弹幕服务器 {host.Host}:{host.Port}。");
+        _log.Info($"已连接 TCP 弹幕服务器 {host.Host}:{host.Port}。");
         await SendAuthAsync(stream, settings, roomId, token, cancellationToken);
         _ = Task.Run(() => HeartbeatLoopAsync(stream, cancellationToken), cancellationToken);
         await ReadLoopAsync(stream, cancellationToken);
     }
 
+    private async Task ConnectAndReadWebSocketAsync(
+        AppSettings settings,
+        int roomId,
+        string token,
+        DanmakuHost host,
+        bool useTls,
+        CancellationToken cancellationToken)
+    {
+        using var socket = new ClientWebSocket();
+        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        socket.Options.SetRequestHeader("User-Agent", settings.UserAgent);
+        socket.Options.SetRequestHeader("Origin", "https://live.bilibili.com");
+        socket.Options.SetRequestHeader("Referer", $"https://live.bilibili.com/{roomId}");
+        var cookie = BuildCookieHeader(settings);
+        if (!string.IsNullOrWhiteSpace(cookie))
+        {
+            socket.Options.SetRequestHeader("Cookie", cookie);
+        }
+
+        var port = useTls ? host.SecureWebSocketPort : host.WebSocketPort;
+        var scheme = useTls ? "wss" : "ws";
+        var uri = new Uri($"{scheme}://{host.Host}:{port}/sub");
+
+        await socket.ConnectAsync(uri, cancellationToken);
+        _log.Info($"已连接 {(useTls ? "WSS" : "WS")} 弹幕服务器 {host.Host}:{port}。");
+        await SendAuthAsync(socket, settings, roomId, token, cancellationToken);
+        _ = Task.Run(() => HeartbeatLoopAsync(socket, cancellationToken), cancellationToken);
+        await ReadWebSocketLoopAsync(socket, cancellationToken);
+    }
+
     private async Task SendAuthAsync(
-        NetworkStream stream,
+        Stream stream,
         AppSettings settings,
         int roomId,
         string token,
         CancellationToken cancellationToken)
     {
-        // protover: 3 请求 brotli 压缩包；platform/type 对齐弹幕姬网页端直连习惯。
-        var auth = new
-        {
-            uid = 0,
-            roomid = roomId,
-            protover = 3,
-            platform = "danmuji",
-            type = 2,
-            key = token,
-            buvid = settings.Buvid3
-        };
-        var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(auth));
-        var packet = BuildPacket(7, 1, payload);
+        var packet = BuildAuthPacket(settings, roomId, token);
         await stream.WriteAsync(packet, cancellationToken);
     }
 
-    private async Task HeartbeatLoopAsync(NetworkStream stream, CancellationToken cancellationToken)
+    private static Task SendAuthAsync(
+        ClientWebSocket socket,
+        AppSettings settings,
+        int roomId,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var packet = BuildAuthPacket(settings, roomId, token);
+        return socket.SendAsync(packet, WebSocketMessageType.Binary, true, cancellationToken);
+    }
+
+    private async Task HeartbeatLoopAsync(Stream stream, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -234,7 +589,24 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         }
     }
 
-    private async Task ReadLoopAsync(NetworkStream stream, CancellationToken cancellationToken)
+    private static async Task HeartbeatLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                var packet = BuildPacket(2, 1, []);
+                await socket.SendAsync(packet, WebSocketMessageType.Binary, true, cancellationToken);
+            }
+            catch
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task ReadLoopAsync(Stream stream, CancellationToken cancellationToken)
     {
         var header = new byte[16];
         while (!cancellationToken.IsCancellationRequested)
@@ -264,8 +636,58 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         }
     }
 
+    private async Task ReadWebSocketLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[64 * 1024];
+        while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
+        {
+            using var message = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
+            {
+                result = await socket.ReceiveAsync(buffer, cancellationToken);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    return;
+                }
+
+                message.Write(buffer, 0, result.Count);
+            }
+            while (!result.EndOfMessage);
+
+            var payload = message.ToArray();
+            if (payload.Length == 0)
+            {
+                continue;
+            }
+
+            if (result.MessageType == WebSocketMessageType.Binary)
+            {
+                ProcessWebSocketPayload(payload);
+            }
+            else
+            {
+                PublishMessages(payload);
+            }
+        }
+    }
+
+    private void ProcessWebSocketPayload(ReadOnlySpan<byte> payload)
+    {
+        if (!TryProcessNestedPackets(payload))
+        {
+            PublishMessages(payload);
+        }
+    }
+
     private void ProcessPacket(int version, int operation, ReadOnlySpan<byte> payload)
     {
+        if (operation == 8)
+        {
+            _log.Info("弹幕服务器认证成功，正在等待新弹幕。");
+            return;
+        }
+
         if (operation != 5)
         {
             return;
@@ -295,7 +717,6 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
 
     private void ProcessDecompressed(byte[] payload)
     {
-        // 压缩包内通常继续嵌套标准 16 字节头，也可能是连续 JSON，二者都兼容。
         if (TryProcessNestedPackets(payload))
         {
             return;
@@ -331,7 +752,20 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
 
     private void PublishMessages(ReadOnlySpan<byte> payload)
     {
-        foreach (var message in BilibiliMessageParser.ParseJsonMessages(payload))
+        var messages = BilibiliMessageParser.ParseJsonMessages(payload);
+        if (messages.Count == 0)
+        {
+            return;
+        }
+
+        var total = Interlocked.Add(ref _realtimeMessageCount, messages.Count);
+        if (total <= 5 || total % 20 == 0)
+        {
+            _log.Info($"已接收 B站实时弹幕 {total} 条。");
+        }
+
+        _lastRealtimeMessageAt = DateTimeOffset.UtcNow;
+        foreach (var message in messages)
         {
             PublishWithNameCache(message);
         }
@@ -354,18 +788,63 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         MessageReceived?.Invoke(message);
     }
 
-    private HttpRequestMessage CreateRequest(Uri url, AppSettings settings)
+    private HttpRequestMessage CreateRequest(Uri url, AppSettings settings, int? roomId = null)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.ParseAdd(settings.UserAgent);
-        request.Headers.Referrer = new Uri("https://live.bilibili.com/");
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        if (!string.IsNullOrWhiteSpace(settings.Cookie))
+        if (!request.Headers.UserAgent.TryParseAdd(settings.UserAgent))
         {
-            request.Headers.TryAddWithoutValidation("Cookie", settings.Cookie);
+            request.Headers.UserAgent.ParseAdd(AppSettings.DefaultUserAgent);
+        }
+
+        request.Headers.Referrer = new Uri(roomId is null
+            ? "https://live.bilibili.com/"
+            : $"https://live.bilibili.com/{roomId}");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.TryAddWithoutValidation("Origin", "https://live.bilibili.com");
+        var cookie = BuildCookieHeader(settings);
+        if (!string.IsNullOrWhiteSpace(cookie))
+        {
+            request.Headers.TryAddWithoutValidation("Cookie", cookie);
         }
 
         return request;
+    }
+
+    private static string BuildCookieHeader(AppSettings settings)
+    {
+        var cookie = settings.Cookie.Trim().TrimEnd(';');
+        if (CookieContains(cookie, "buvid3"))
+        {
+            return cookie;
+        }
+
+        var buvidCookie = $"buvid3={settings.Buvid3}";
+        return string.IsNullOrWhiteSpace(cookie)
+            ? buvidCookie
+            : $"{cookie}; {buvidCookie}";
+    }
+
+    private static bool CookieContains(string cookie, string name)
+    {
+        return cookie
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(part => part.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static byte[] BuildAuthPacket(AppSettings settings, int roomId, string token)
+    {
+        var auth = new
+        {
+            uid = 0,
+            roomid = roomId,
+            protover = 3,
+            platform = "web",
+            type = 2,
+            key = token,
+            buvid = settings.Buvid3
+        };
+        var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(auth));
+        return BuildPacket(7, 1, payload);
     }
 
     private static byte[] BuildPacket(int operation, int version, byte[] payload)
@@ -380,7 +859,7 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         return packet;
     }
 
-    private static async Task<int> ReadExactAsync(NetworkStream stream, byte[] buffer, CancellationToken cancellationToken)
+    private static async Task<int> ReadExactAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
     {
         var offset = 0;
         while (offset < buffer.Length)
@@ -426,6 +905,24 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
         }
     }
 
+    private static void ThrowIfBilibiliApiFailed(JsonElement root, string label)
+    {
+        if (!root.TryGetProperty("code", out var codeElement) ||
+            !codeElement.TryGetInt32(out var code) ||
+            code == 0)
+        {
+            return;
+        }
+
+        var message = root.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
+            ? messageElement.GetString()
+            : root.TryGetProperty("msg", out var msgElement) && msgElement.ValueKind == JsonValueKind.String
+                ? msgElement.GetString()
+                : "未知错误";
+
+        throw new InvalidOperationException($"B站{label}接口返回错误 {code}：{message}");
+    }
+
     private static bool LooksMasked(string userName)
     {
         return userName.Contains("***", StringComparison.Ordinal) ||
@@ -434,4 +931,6 @@ public sealed partial class BilibiliWebRoomClient : IDisposable
 
     [GeneratedRegex(@"(?:^|live\.bilibili\.com/(?:blanc/)?)(?<id>\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex RoomIdPattern();
+
+    private sealed record WbiKeys(string MixinKey);
 }

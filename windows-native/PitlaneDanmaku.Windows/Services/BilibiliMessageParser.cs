@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using PitlaneDanmaku.Windows.Models;
 
@@ -31,6 +32,58 @@ public static class BilibiliMessageParser
         }
 
         return messages;
+    }
+
+    public static IReadOnlyList<ChatMessage> ParseHistoryMessages(JsonElement root)
+    {
+        var messages = new List<ChatMessage>();
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+        {
+            return messages;
+        }
+
+        ParseHistoryArray(data, "admin", messages);
+        ParseHistoryArray(data, "room", messages);
+        return messages;
+    }
+
+    private static void ParseHistoryArray(JsonElement data, string propertyName, List<ChatMessage> messages)
+    {
+        if (!data.TryGetProperty(propertyName, out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var item in array.EnumerateArray())
+        {
+            var message = ParseHistoryItem(item);
+            if (message is not null)
+            {
+                messages.Add(message);
+            }
+        }
+    }
+
+    private static ChatMessage? ParseHistoryItem(JsonElement item)
+    {
+        var text = TryGetString(item, "text");
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var userName = TryGetString(item, "nickname");
+        var uid = TryGetInt64(item, "uid");
+        var timeline = TryGetString(item, "timeline");
+        var checkText = "";
+        if (item.TryGetProperty("check_info", out var checkInfo) && checkInfo.ValueKind == JsonValueKind.Object)
+        {
+            checkText = $"{TryGetString(checkInfo, "ts")}:{TryGetString(checkInfo, "ct")}";
+        }
+
+        var rawId = $"{timeline}:{uid}:{userName}:{text}:{checkText}";
+        var id = "history:" + StableHash(Encoding.UTF8.GetBytes(rawId));
+        return ChatMessage.CreateComment(userName, text, uid, id);
     }
 
     private static ChatMessage? ParseRoot(JsonElement root, ReadOnlySpan<byte> rawPayload)

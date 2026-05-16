@@ -42,7 +42,7 @@ public sealed class AppSettings
         UserAgent = string.IsNullOrWhiteSpace(UserAgent) ? DefaultUserAgent : UserAgent.Trim();
         RoomInput = RoomInput.Trim();
         Cookie = Cookie.Trim();
-        Buvid3 = Buvid3.Trim();
+        Buvid3 = string.IsNullOrWhiteSpace(Buvid3) ? GenerateBuvid3() : Buvid3.Trim();
         ObsPort = Math.Clamp(ObsPort, 1024, 65535);
         LaunchIntervalMs = Math.Clamp(LaunchIntervalMs, 120, 10000);
         QueueLimit = Math.Clamp(QueueLimit, 5, 500);
@@ -51,5 +51,10 @@ public sealed class AppSettings
         MaxMessageLength = Math.Clamp(MaxMessageLength, 4, 200);
         MaxRepeatCharacters = Math.Clamp(MaxRepeatCharacters, 2, 20);
         MaxStageWidth = Math.Clamp(MaxStageWidth, 960, 7680);
+    }
+
+    private static string GenerateBuvid3()
+    {
+        return Guid.NewGuid().ToString().ToUpperInvariant() + "infoc";
     }
 }

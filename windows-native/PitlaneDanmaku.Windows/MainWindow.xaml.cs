@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 using PitlaneDanmaku.Windows.Models;
 using PitlaneDanmaku.Windows.Services;
@@ -27,7 +29,7 @@ public partial class MainWindow : Window
         _obsServer = new LocalObsServer(_assets, _log);
 
         LoadSettingsToUi();
-        AssetText.Text = $"素材：{_assets.Cars.Count} 辆赛车，评论框 {(_assets.CommentFramePath.Length > 0 ? "已加载" : "缺失")}";
+        AssetText.Text = $"素材：{_assets.Cars.Count} 辆赛车，评论框 {(_assets.CommentFramePath.Length > 0 ? "已加载" : "缺失")}；字体 HarmonyOS Sans SC";
         ObsUrlBox.Text = _obsServer.OverlayUrl;
 
         _log.EntryAdded += OnLogEntryAdded;
@@ -77,10 +79,31 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_overlayWindow is not null)
+        {
+            _overlayWindow.ApplySettings(_settings);
+            _overlayWindow.Show();
+            _overlayWindow.Activate();
+            _log.Info("桌面透明悬浮窗已显示。");
+            return;
+        }
+
         _overlayWindow = new OverlayWindow(_assets, _settings);
         _overlayWindow.Closed += (_, _) => _overlayWindow = null;
         _overlayWindow.Show();
         _log.Info("桌面透明悬浮窗已打开。");
+    }
+
+    private void HideOverlayButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_overlayWindow is null)
+        {
+            _log.Info("桌面透明悬浮窗当前未打开。");
+            return;
+        }
+
+        _overlayWindow.Hide();
+        _log.Info("桌面透明悬浮窗已隐藏。");
     }
 
     private void SimulateCommentButton_Click(object sender, RoutedEventArgs e)
@@ -113,6 +136,37 @@ public partial class MainWindow : Window
     {
         _log.Clear();
         LogListBox.Items.Clear();
+    }
+
+    private void LogListBox_PreviewMouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source)
+        {
+            return;
+        }
+
+        var item = FindParent<ListBoxItem>(source);
+        if (item is null)
+        {
+            return;
+        }
+
+        item.IsSelected = true;
+        item.Focus();
+    }
+
+    private void CopySelectedLogMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        var entries = LogListBox.SelectedItems
+            .OfType<string>()
+            .ToArray();
+
+        CopyLogEntries(entries.Length > 0 ? entries : _log.Snapshot);
+    }
+
+    private void CopyAllLogsMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CopyLogEntries(_log.Snapshot);
     }
 
     private void ExportLogButton_Click(object sender, RoutedEventArgs e)
@@ -213,6 +267,32 @@ public partial class MainWindow : Window
         SettingsStore.Save(_settings);
         LoadSettingsToUi();
         ObsUrlBox.Text = $"http://127.0.0.1:{_settings.ObsPort}/overlay";
+    }
+
+    private static void CopyLogEntries(IEnumerable<string> entries)
+    {
+        var text = string.Join(Environment.NewLine, entries);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            Clipboard.SetText(text);
+        }
+    }
+
+    private static T? FindParent<T>(DependencyObject child)
+        where T : DependencyObject
+    {
+        var current = child;
+        while (current is not null)
+        {
+            if (current is T typed)
+            {
+                return typed;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 
     private void LoadSettingsToUi()

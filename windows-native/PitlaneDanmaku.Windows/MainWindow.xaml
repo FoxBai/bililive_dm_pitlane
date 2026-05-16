@@ -117,6 +117,10 @@
                                     Click="RestartObsButton_Click"/>
                             <Button Content="打开悬浮窗"
                                     Click="OpenOverlayButton_Click"/>
+                            <Button Content="隐藏悬浮窗"
+                                    Background="#94A3B8"
+                                    BorderBrush="#94A3B8"
+                                    Click="HideOverlayButton_Click"/>
                         </WrapPanel>
                     </StackPanel>
                 </GroupBox>
@@ -191,7 +195,17 @@
                              BorderBrush="#263244"
                              Foreground="{StaticResource TextBrush}"
                              FontFamily="Consolas"
-                             FontSize="13"/>
+                             FontSize="13"
+                             PreviewMouseRightButtonDown="LogListBox_PreviewMouseRightButtonDown">
+                        <ListBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="复制选中日志"
+                                          Click="CopySelectedLogMenuItem_Click"/>
+                                <MenuItem Header="复制全部日志"
+                                          Click="CopyAllLogsMenuItem_Click"/>
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
+                    </ListBox>
                 </Grid>
             </Border>
         </Grid>

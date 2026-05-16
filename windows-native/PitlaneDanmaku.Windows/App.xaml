@@ -1,7 +1,6 @@
 <Application x:Class="PitlaneDanmaku.Windows.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             StartupUri="MainWindow.xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
         <SolidColorBrush x:Key="PanelBrush" Color="#18202B"/>
         <SolidColorBrush x:Key="PanelBorderBrush" Color="#2A3544"/>

@@ -5,15 +5,13 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using PitlaneDanmaku.Windows.Models;
+using PitlaneDanmaku.Windows.Rendering;
 using PitlaneDanmaku.Windows.Services;
 
 namespace PitlaneDanmaku.Windows;
 
 public partial class OverlayWindow : Window
 {
-    private const double BaseWidth = 1040;
-    private const double BaseHeight = 500;
-    private const double BaseGap = 24;
     private readonly AssetCatalog _assets;
     private readonly DispatcherTimer _timer;
     private readonly List<RaceVisual> _items = [];
@@ -69,16 +67,16 @@ public partial class OverlayWindow : Window
     {
         var root = new Grid
         {
-            Width = BaseWidth,
-            Height = BaseHeight,
+            Width = OverlayLayout.BaseWidth,
+            Height = OverlayLayout.BaseHeight,
             RenderTransformOrigin = new Point(0, 1)
         };
 
         root.Children.Add(new Image
         {
             Source = LoadBitmap(_assets.CommentFramePath),
-            Width = 555,
-            Height = 500,
+            Width = OverlayLayout.FrameWidth,
+            Height = OverlayLayout.FrameHeight,
             Stretch = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top
@@ -87,18 +85,19 @@ public partial class OverlayWindow : Window
         var carImage = new Image
         {
             Source = LoadBitmap(car.AbsolutePath),
-            Width = 555,
+            Width = car.Width,
+            Height = car.Height,
             Stretch = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(486, 250, 0, 0)
+            Margin = new Thickness(OverlayLayout.CarLeft, OverlayLayout.BaseHeight - car.Height - OverlayLayout.CarBottom, 0, 0)
         };
         root.Children.Add(carImage);
 
         var textPanel = new StackPanel
         {
-            Width = 370,
-            Margin = new Thickness(86, 278, 0, 0),
+            Width = OverlayLayout.TextWidth,
+            Margin = new Thickness(OverlayLayout.TextLeft, OverlayLayout.TextTop, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top
         };
@@ -119,6 +118,7 @@ public partial class OverlayWindow : Window
                 Child = new TextBlock
                 {
                     Text = "SC",
+                    FontFamily = EmbeddedFonts.HarmonySansSc,
                     Foreground = new SolidColorBrush(Color.FromRgb(22, 18, 10)),
                     FontSize = 30,
                     FontWeight = FontWeights.Black
@@ -129,11 +129,12 @@ public partial class OverlayWindow : Window
         namePanel.Children.Add(new TextBlock
         {
             Text = message.UserName,
+            FontFamily = EmbeddedFonts.HarmonySansSc,
             Foreground = Brushes.White,
-            FontSize = 52,
+            FontSize = OverlayLayout.NameFontSize,
             FontWeight = FontWeights.ExtraBold,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxWidth = message.IsSuperChat ? 275 : 360,
+            MaxWidth = message.IsSuperChat ? OverlayLayout.SuperChatNameWidth : OverlayLayout.NameWidth,
             Effect = Shadow()
         });
 
@@ -141,20 +142,21 @@ public partial class OverlayWindow : Window
         textPanel.Children.Add(new TextBlock
         {
             Text = message.Text,
+            FontFamily = EmbeddedFonts.HarmonySansSc,
             Foreground = Brushes.White,
-            FontSize = 44,
+            FontSize = OverlayLayout.MessageFontSize,
             FontWeight = FontWeights.SemiBold,
-            LineHeight = 50,
+            LineHeight = OverlayLayout.MessageLineHeight,
             TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 104,
-            Margin = new Thickness(0, 24, 0, 0),
+            MaxHeight = OverlayLayout.MessageMaxHeight,
+            Margin = new Thickness(0, OverlayLayout.MessageTopMargin, 0, 0),
             Effect = Shadow()
         });
         root.Children.Add(textPanel);
 
         return new RaceVisual(root)
         {
-            X = -BaseWidth,
+            X = -OverlayLayout.BaseWidth,
             TargetX = 0
         };
     }
@@ -162,8 +164,8 @@ public partial class OverlayWindow : Window
     private void LayoutItems()
     {
         var scale = ComputeScale();
-        var itemWidth = BaseWidth * scale;
-        var gap = BaseGap * scale;
+        var itemWidth = OverlayLayout.BaseWidth * scale;
+        var gap = OverlayLayout.BaseGap * scale;
         var visibleWidth = Math.Min(ActualWidth, _settings.MaxStageWidth);
         var capacity = Math.Max(_settings.MinVisibleItems, (int)Math.Floor(visibleWidth / Math.Max(1, itemWidth + gap)));
 
@@ -198,10 +200,10 @@ public partial class OverlayWindow : Window
 
     private double ComputeScale()
     {
-        var heightScale = Math.Max(0.2, (ActualHeight - 10) / BaseHeight);
+        var heightScale = Math.Max(0.2, (ActualHeight - 10) / OverlayLayout.BaseHeight);
         var widthScale = Math.Max(
             0.2,
-            ActualWidth / (_settings.MinVisibleItems * BaseWidth + (_settings.MinVisibleItems - 1) * BaseGap));
+            ActualWidth / (_settings.MinVisibleItems * OverlayLayout.BaseWidth + (_settings.MinVisibleItems - 1) * OverlayLayout.BaseGap));
         return Math.Min(1, Math.Min(heightScale, widthScale));
     }
 
@@ -215,7 +217,7 @@ public partial class OverlayWindow : Window
             item.X += (item.TargetX - item.X) * easing;
             Canvas.SetLeft(item.Root, item.X);
 
-            if (item.Leaving && item.X > ActualWidth + BaseWidth)
+            if (item.Leaving && item.X > ActualWidth + OverlayLayout.BaseWidth)
             {
                 StageCanvas.Children.Remove(item.Root);
                 _items.RemoveAt(index);
