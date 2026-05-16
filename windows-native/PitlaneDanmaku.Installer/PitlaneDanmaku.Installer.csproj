@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PitlaneDanmaku.Windows.Setup</AssemblyName>
+    <RootNamespace>PitlaneDanmaku.Installer</RootNamespace>
+    <Version>0.2.3</Version>
+    <Authors>FoxBai</Authors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\payload.zip"
+                      LogicalName="PitlaneDanmaku.Payload.zip"
+                      Condition="Exists('Resources\payload.zip')" />
+  </ItemGroup>
+
+</Project>
