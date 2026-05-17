@@ -163,3 +163,6 @@ Bililive_dm.VC.db
 .vs/
 BundleArtifacts
 .idea
+windows-lite-native/build/
+windows-lite-native/build-vs/
+windows-lite-native/build-vcpkg/

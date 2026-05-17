@@ -2,7 +2,12 @@
 
 `bililive_dm_pitlane` 是基于 [copyliu/bililive_dm](https://github.com/copyliu/bililive_dm) 创建的 Pitlane 分支，目标是把 B站直播评论包装成赛车 / pit lane 风格的透明叠加画面，并提供 Windows 原生应用。
 
-当前仓库保留 `bililive_dm` 的历史代码和授权文件，在此基础上新增 `windows-native/PitlaneDanmaku.Windows`。Windows 版本使用 WPF / .NET 8，不沿用 Electron，也不直接复用 `FoxBai/pitlane_danmaku` 旧 Windows 实现；赛车和评论框素材来自 Pitlane 项目素材目录。
+当前仓库保留 `bililive_dm` 的历史代码和授权文件，在此基础上新增两个 Windows 方向：
+
+- `windows-native/PitlaneDanmaku.Windows`：当前可发布的 WPF / .NET 8 版本。
+- `windows-lite-native/`：小体积 C++ 原生重写方向，用于逐步减少 .NET Runtime 和自包含安装包体积。
+
+WPF 版本不沿用 Electron，也不直接复用 `FoxBai/pitlane_danmaku` 旧 Windows 实现；赛车和评论框素材来自 Pitlane 项目素材目录。
 
 ## 当前能力
 
@@ -54,6 +59,24 @@ http://127.0.0.1:17333/overlay
 ```
 
 浏览器源背景保持透明，适合叠加到直播画面上。
+
+## Windows Lite Native 方向
+
+项目路径：
+
+```powershell
+windows-lite-native
+```
+
+这个目录是正在推进中的 C++ 小体积版本。它面向人和 agent 的接手说明都写在 `windows-lite-native/README.md` 里。当前状态：
+
+- 已有可启动的 Win32 测试窗口。
+- 已接入基础 B 站 WSS 弹幕、WBI 签名、buvid3 兜底和脱敏昵称缓存。
+- 已有原生透明叠加层预览。
+- 已有基础 OBS 本地服务：`http://127.0.0.1:17333/overlay`、`/events`、`/assets/...`。
+- 还没完成赛车发车动画、完整 OBS 浏览器源布局、TCP 回退、完整 JSON 解析和 lite 安装器。
+
+构建产物目录如 `windows-lite-native/build-vs/`、`windows-lite-native/build-vcpkg/` 不应提交。
 
 ## 素材
 
