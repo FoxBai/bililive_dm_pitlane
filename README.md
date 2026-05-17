@@ -71,14 +71,14 @@ windows-lite-native
 这个目录是正在推进中的 C++ 小体积版本。它面向人和 agent 的接手说明都写在 `windows-lite-native/README.md` 里。当前状态：
 
 - 已有可启动的 Win32 测试窗口。
-- 已接入基础 B 站 WSS / WS 弹幕、WBI 签名、buvid3 兜底、节点重试和脱敏昵称缓存。
+- 已接入基础 B 站 WSS / WS / TCP 弹幕、WBI 签名、buvid3 兜底、节点重试和脱敏昵称缓存。
 - lite 发布构建使用 vcpkg 启用 zlib/brotli，支持 B 站压缩弹幕包解码。
 - 已有原生透明叠加层预览，窗口尺寸会跟随同屏数和最大舞台宽度设置调整。
 - 已有基础 OBS 本地服务：`http://127.0.0.1:17333/overlay`、`/events`、`/assets/...`、`/health`。
 - 已有 OBS 浏览器源基础赛车发车动画，仍需继续打磨最终布局。
 - 已有设置持久化，默认写入 `%LOCALAPPDATA%\PitlaneDanmakuLite\settings.ini`。
 - 已有 `package-lite.ps1` 便携目录打包脚本、Inno Setup 脚本和 7-Zip SFX 兜底安装器；本轮已生成 lite `.exe` 安装包。
-- 还没完成 TCP 回退、完整 JSON 解析和真实直播间长时间测试。
+- 还没完成完整 JSON 解析、历史弹幕补偿和真实直播间长时间测试。
 
 构建产物目录如 `windows-lite-native/build-vs/`、`windows-lite-native/build-vcpkg/` 不应提交。
 

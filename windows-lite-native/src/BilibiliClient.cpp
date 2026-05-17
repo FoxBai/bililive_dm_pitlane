@@ -4,6 +4,8 @@
 #define NOMINMAX
 #endif
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <bcrypt.h>
 #include <winhttp.h>
@@ -83,6 +85,59 @@ struct WinHttpHandle {
     }
 };
 
+struct WinsockSession {
+    WinsockSession() {
+        WSADATA data{};
+        ok = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }
+
+    ~WinsockSession() {
+        if (ok) {
+            WSACleanup();
+        }
+    }
+
+    bool ok = false;
+};
+
+struct SocketHandle {
+    SOCKET value = INVALID_SOCKET;
+
+    SocketHandle() = default;
+    explicit SocketHandle(SOCKET socket) : value(socket) {}
+
+    SocketHandle(const SocketHandle&) = delete;
+    SocketHandle& operator=(const SocketHandle&) = delete;
+
+    SocketHandle(SocketHandle&& other) noexcept : value(other.value) {
+        other.value = INVALID_SOCKET;
+    }
+
+    SocketHandle& operator=(SocketHandle&& other) noexcept {
+        if (this != &other) {
+            reset();
+            value = other.value;
+            other.value = INVALID_SOCKET;
+        }
+        return *this;
+    }
+
+    ~SocketHandle() {
+        reset();
+    }
+
+    void reset() {
+        if (value != INVALID_SOCKET) {
+            closesocket(value);
+            value = INVALID_SOCKET;
+        }
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return value != INVALID_SOCKET;
+    }
+};
+
 std::wstring utf8_to_wide(const std::string& value) {
     if (value.empty()) {
         return {};
@@ -142,6 +197,10 @@ bool cookie_contains(const std::wstring& cookie, const std::wstring& name) {
 
 std::wstring endpoint_name(const DanmakuHost& host, bool secure) {
     return host.host + L":" + std::to_wstring(secure ? host.secure_websocket_port : host.websocket_port);
+}
+
+std::wstring tcp_endpoint_name(const DanmakuHost& host) {
+    return host.host + L":" + std::to_wstring(host.port);
 }
 
 bool contains_masked_name(const std::wstring& name) {
@@ -556,6 +615,195 @@ void sleep_until_retry(const std::shared_ptr<std::atomic_bool>& running) {
     }
 }
 
+void publish_with_name_cache(
+    ChatMessage message,
+    const BilibiliClient::MessageCallback& on_message,
+    const BilibiliClient::LogCallback& on_log,
+    std::unordered_map<long long, std::wstring>& user_name_cache,
+    bool& masked_name_warned,
+    long long& received_count) {
+    if (message.user_id.has_value() && *message.user_id > 0) {
+        if (looks_masked_name(message.user_name)) {
+            const auto cached = user_name_cache.find(*message.user_id);
+            if (cached != user_name_cache.end()) {
+                message.user_name = cached->second;
+            } else {
+                if (!masked_name_warned) {
+                    masked_name_warned = true;
+                    on_log(L"收到 B站返回的脱敏昵称，已跳过无法恢复的弹幕；如仍频繁出现，请填写登录后的网页 Cookie。");
+                }
+                return;
+            }
+        } else if (!message.user_name.empty() && !contains_masked_name(message.user_name)) {
+            user_name_cache[*message.user_id] = message.user_name;
+        }
+    }
+
+    ++received_count;
+    if (received_count <= 5 || received_count % 20 == 0) {
+        on_log(L"已接收 B站实时弹幕 " + std::to_wstring(received_count) + L" 条。");
+    }
+    on_message(std::move(message));
+}
+
+SocketHandle connect_tcp_socket(const DanmakuHost& host) {
+    static WinsockSession winsock;
+    if (!winsock.ok) {
+        throw std::runtime_error("WinSock 初始化失败。");
+    }
+
+    addrinfoW hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    addrinfoW* raw_result = nullptr;
+    const auto service = std::to_wstring(host.port);
+    const int resolve_result = GetAddrInfoW(host.host.c_str(), service.c_str(), &hints, &raw_result);
+    if (resolve_result != 0 || raw_result == nullptr) {
+        throw std::runtime_error("解析 TCP 弹幕服务器地址失败。");
+    }
+
+    std::unique_ptr<addrinfoW, decltype(&FreeAddrInfoW)> addresses(raw_result, FreeAddrInfoW);
+    for (auto* address = addresses.get(); address != nullptr; address = address->ai_next) {
+        SocketHandle socket(::socket(address->ai_family, address->ai_socktype, address->ai_protocol));
+        if (!socket) {
+            continue;
+        }
+
+        DWORD timeout_ms = 5000;
+        setsockopt(socket.value, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+        setsockopt(socket.value, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+
+        if (::connect(socket.value, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0) {
+            return socket;
+        }
+    }
+
+    throw std::runtime_error("连接 TCP 弹幕服务器失败。");
+}
+
+void send_all(SOCKET socket, const std::string& bytes) {
+    std::size_t sent_total = 0;
+    while (sent_total < bytes.size()) {
+        const int sent = send(
+            socket,
+            bytes.data() + sent_total,
+            static_cast<int>(bytes.size() - sent_total),
+            0);
+        if (sent == SOCKET_ERROR || sent == 0) {
+            throw std::runtime_error("发送 TCP 弹幕数据失败。");
+        }
+        sent_total += static_cast<std::size_t>(sent);
+    }
+}
+
+bool read_exact(SOCKET socket, char* data, std::size_t size, const std::shared_ptr<std::atomic_bool>& running) {
+    std::size_t read_total = 0;
+    while (read_total < size && running->load()) {
+        const int received = recv(socket, data + read_total, static_cast<int>(size - read_total), 0);
+        if (received > 0) {
+            read_total += static_cast<std::size_t>(received);
+            continue;
+        }
+        if (received == 0) {
+            return false;
+        }
+
+        const int error = WSAGetLastError();
+        if (error == WSAETIMEDOUT) {
+            continue;
+        }
+        throw std::runtime_error("读取 TCP 弹幕数据失败：" + std::to_string(error));
+    }
+
+    return read_total == size;
+}
+
+void stream_tcp_endpoint(
+    const AppSettings& settings,
+    const BilibiliConnectionInfo& info,
+    const DanmakuHost& host,
+    const BilibiliClient::MessageCallback& on_message,
+    const BilibiliClient::LogCallback& on_log,
+    const std::shared_ptr<std::atomic_bool>& running,
+    std::unordered_map<long long, std::wstring>& user_name_cache,
+    bool& masked_name_warned,
+    long long& received_count) {
+    if (host.port <= 0) {
+        throw std::runtime_error("TCP 弹幕服务器端口无效。");
+    }
+
+    auto socket = connect_tcp_socket(host);
+    on_log(L"已连接 TCP 弹幕服务器 " + tcp_endpoint_name(host));
+
+    send_all(socket.value, build_auth_packet(settings, info.resolved_room_id, info.token));
+
+    std::atomic_bool socket_open{true};
+    std::thread heartbeat([&]() {
+        while (running->load() && socket_open.load()) {
+            for (int i = 0; i < 30 && running->load() && socket_open.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            if (!running->load() || !socket_open.load()) {
+                break;
+            }
+            try {
+                send_all(socket.value, build_packet(2, 1, {}));
+            } catch (...) {
+                return;
+            }
+        }
+    });
+
+    auto cached_on_message = [&](ChatMessage message) {
+        publish_with_name_cache(
+            std::move(message),
+            on_message,
+            on_log,
+            user_name_cache,
+            masked_name_warned,
+            received_count);
+    };
+
+    try {
+        std::vector<char> header(16);
+        while (running->load()) {
+            if (!read_exact(socket.value, header.data(), header.size(), running)) {
+                break;
+            }
+
+            const int packet_length = read_be32(header.data());
+            const int header_length = read_be16(header.data() + 4);
+            const int version = read_be16(header.data() + 6);
+            const int operation = read_be32(header.data() + 8);
+            if (packet_length < header_length || header_length < 16 || packet_length > 16 * 1024 * 1024) {
+                throw std::runtime_error("非法 TCP 弹幕包长度：" + std::to_string(packet_length));
+            }
+
+            std::string payload(static_cast<std::size_t>(packet_length - header_length), '\0');
+            if (!payload.empty() && !read_exact(socket.value, payload.data(), payload.size(), running)) {
+                break;
+            }
+
+            process_packet(version, operation, payload, cached_on_message, on_log);
+        }
+    } catch (...) {
+        socket_open.store(false);
+        socket.reset();
+        if (heartbeat.joinable()) {
+            heartbeat.join();
+        }
+        throw;
+    }
+
+    socket_open.store(false);
+    socket.reset();
+    if (heartbeat.joinable()) {
+        heartbeat.join();
+    }
+}
+
 void stream_websocket_endpoint(
     const AppSettings& settings,
     const BilibiliConnectionInfo& info,
@@ -660,28 +908,13 @@ void stream_websocket_endpoint(
     });
 
     auto cached_on_message = [&](ChatMessage message) {
-        if (message.user_id.has_value() && *message.user_id > 0) {
-            if (looks_masked_name(message.user_name)) {
-                const auto cached = user_name_cache.find(*message.user_id);
-                if (cached != user_name_cache.end()) {
-                    message.user_name = cached->second;
-                } else {
-                    if (!masked_name_warned) {
-                        masked_name_warned = true;
-                        on_log(L"收到 B站返回的脱敏昵称，已跳过无法恢复的弹幕；如仍频繁出现，请填写登录后的网页 Cookie。");
-                    }
-                    return;
-                }
-            } else if (!message.user_name.empty() && !contains_masked_name(message.user_name)) {
-                user_name_cache[*message.user_id] = message.user_name;
-            }
-        }
-
-        ++received_count;
-        if (received_count <= 5 || received_count % 20 == 0) {
-            on_log(L"已接收 B站实时弹幕 " + std::to_wstring(received_count) + L" 条。");
-        }
-        on_message(std::move(message));
+        publish_with_name_cache(
+            std::move(message),
+            on_message,
+            on_log,
+            user_name_cache,
+            masked_name_warned,
+            received_count);
     };
 
     std::string message_buffer;
@@ -840,6 +1073,31 @@ void BilibiliClient::stream_messages(
                     on_log(std::wstring(secure ? L"WSS" : L"WS") + L" 弹幕服务器 " + endpoint_name(host, secure) + L" 断开：" + wide);
                 }
             }
+
+            if (!connected && running->load() && host.port > 0) {
+                try {
+                    stream_tcp_endpoint(
+                        effective_settings,
+                        info,
+                        host,
+                        on_message,
+                        on_log,
+                        running,
+                        user_name_cache,
+                        masked_name_warned,
+                        received_count);
+                    connected = true;
+                } catch (const std::exception& ex) {
+                    const std::string error_message = ex.what();
+                    const int length = MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), nullptr, 0);
+                    std::wstring wide(static_cast<std::size_t>(std::max(length, 0)), L'\0');
+                    if (length > 0) {
+                        MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), wide.data(), length);
+                    }
+                    on_log(L"TCP 弹幕服务器 " + tcp_endpoint_name(host) + L" 断开：" + wide);
+                }
+            }
+
             if (connected && running->load()) {
                 on_log(L"当前弹幕服务器连接结束，正在尝试下一个节点。");
             }
