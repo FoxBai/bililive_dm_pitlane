@@ -17,6 +17,8 @@ target_include_directories(pitlane_lite_core
 
 target_compile_features(pitlane_lite_core PUBLIC cxx_std_20)
 
+option(PITLANE_LITE_REQUIRE_COMPRESSION "Require zlib and brotli for live danmaku decompression" ON)
+
 find_package(unofficial-brotli CONFIG QUIET)
 find_package(ZLIB QUIET)
 
@@ -27,6 +29,8 @@ if (unofficial-brotli_FOUND AND ZLIB_FOUND)
             unofficial::brotli::brotlidec
             ZLIB::ZLIB
     )
+elseif(PITLANE_LITE_REQUIRE_COMPRESSION)
+    message(FATAL_ERROR "Pitlane lite requires zlib and brotli. Configure with the vcpkg toolchain, or pass -DPITLANE_LITE_REQUIRE_COMPRESSION=OFF for a receive-limited experimental build.")
 endif()
 
 if (MSVC)

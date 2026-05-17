@@ -1,8 +1,10 @@
 param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Release",
-    [string]$BuildDir = "build-vs",
+    [string]$BuildDir = "build-vcpkg",
     [string]$DistDir = "dist\PitlaneDanmakuLite",
+    [string]$VcpkgRoot = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg",
+    [string]$CMakePath = "",
     [switch]$SkipBuild,
     [switch]$MakeInstaller
 )
@@ -16,6 +18,48 @@ $DistPath = Join-Path $Root $DistDir
 $ExePath = Join-Path $BuildPath "pitlane_lite.exe"
 $InstallerDir = Join-Path $Root "installer"
 $InstallerOutput = Join-Path $InstallerDir "output"
+
+function Resolve-CMake {
+    if (-not [string]::IsNullOrWhiteSpace($CMakePath)) {
+        if (Test-Path $CMakePath) {
+            return (Resolve-Path $CMakePath).Path
+        }
+        throw "CMakePath does not exist: $CMakePath"
+    }
+
+    $PathCommand = Get-Command cmake.exe -ErrorAction SilentlyContinue
+    if ($null -ne $PathCommand) {
+        return $PathCommand.Source
+    }
+
+    $VisualStudioCMake = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    if (Test-Path $VisualStudioCMake) {
+        return $VisualStudioCMake
+    }
+
+    throw "cmake.exe was not found. Install CMake or Visual Studio C++ tools."
+}
+
+function Invoke-CMake {
+    param(
+        [string]$CMakeExe,
+        [string[]]$Arguments
+    )
+
+    $Vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+    if (Test-Path $Vcvars) {
+        $QuotedArgs = ($Arguments | ForEach-Object { '"' + $_ + '"' }) -join " "
+        $CommandLine = 'call "' + $Vcvars + '" >nul && "' + $CMakeExe + '" ' + $QuotedArgs
+        & cmd.exe /d /c $CommandLine
+    }
+    else {
+        & $CMakeExe @Arguments
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "CMake command failed with exit code $LASTEXITCODE."
+    }
+}
 
 function New-IExpressInstaller {
     param(
@@ -164,8 +208,20 @@ RunProgram="powershell.exe -NoProfile -ExecutionPolicy Bypass -File install-lite
 }
 
 if (-not $SkipBuild) {
-    cmake -S $Root -B $BuildPath -G Ninja -DCMAKE_BUILD_TYPE=$Configuration
-    cmake --build $BuildPath --config $Configuration
+    $CMakeExe = Resolve-CMake
+    $ConfigureArgs = @(
+        "-S", $Root,
+        "-B", $BuildPath,
+        "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=$Configuration"
+    )
+    $ToolchainFile = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+    if (Test-Path $ToolchainFile) {
+        $ConfigureArgs += "-DCMAKE_TOOLCHAIN_FILE=$ToolchainFile"
+    }
+
+    Invoke-CMake -CMakeExe $CMakeExe -Arguments $ConfigureArgs
+    Invoke-CMake -CMakeExe $CMakeExe -Arguments @("--build", $BuildPath, "--config", $Configuration)
 }
 
 if (-not (Test-Path $ExePath)) {
@@ -178,6 +234,14 @@ if (Test-Path $DistPath) {
 
 New-Item -ItemType Directory -Force -Path $DistPath | Out-Null
 Copy-Item -LiteralPath $ExePath -Destination (Join-Path $DistPath "pitlane_lite.exe") -Force
+$RuntimeDlls = Get-ChildItem -LiteralPath $BuildPath -Filter "*.dll" -File -ErrorAction SilentlyContinue
+if ($Configuration -eq "Release") {
+    $RuntimeDlls = $RuntimeDlls | Where-Object { $_.Name -ne "zd.dll" }
+}
+elseif ($Configuration -eq "Debug") {
+    $RuntimeDlls = $RuntimeDlls | Where-Object { $_.Name -ne "z.dll" }
+}
+$RuntimeDlls | Copy-Item -Destination $DistPath -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "assets") -Destination (Join-Path $DistPath "assets") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $Root "README.md") -Destination (Join-Path $DistPath "README-lite.md") -Force
 

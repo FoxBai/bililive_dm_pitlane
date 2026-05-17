@@ -28,10 +28,10 @@
 
 ## 当前可运行状态
 
-现在可以编译出一个最小原生窗口程序：
+现在可以编译出一个带压缩弹幕解码能力的原生窗口程序：
 
 ```text
-windows-lite-native/build-vs/pitlane_lite.exe
+windows-lite-native/build-vcpkg/pitlane_lite.exe
 ```
 
 这个程序目前用于验证 lite 版的基础运行链路：
@@ -57,7 +57,7 @@ windows-lite-native/build-vs/pitlane_lite.exe
 
 Lite 版仍没有做到 WPF 版的全部成熟度。B 站 WebSocket 已有基础连接、WBI 签名、鉴权、心跳、可断开接收循环、未压缩 JSON 弹幕解析、buvid3 兜底、WSS/WS 节点重试和同 UID 脱敏昵称缓存；OBS 本地服务已有基础 HTTP/SSE 链路和浏览器源发车动画预览；更完整的消息解析和 TCP 回退还需要继续补。
 
-压缩弹幕包的原生解压代码已经接入 `zlib` 和 `brotli`，但它是可选编译能力：CMake 找到这两个原生库时会定义 `PITLANE_LITE_HAS_COMPRESSION`、握手请求 `protover:3` 并启用 version 2/3 解包；找不到时会请求 `protover:0`，仍可编译运行。
+压缩弹幕包的原生解压代码已经接入 `zlib` 和 `brotli`。默认构建要求这两个库存在，CMake 找到后会定义 `PITLANE_LITE_HAS_COMPRESSION`、握手请求 `protover:3` 并启用 version 2/3 解包。不要用旧的无依赖 `build-vs` 产物连接真实直播间，否则会遇到“当前构建未启用 zlib 解压依赖”。
 
 ## 建议工具链
 
@@ -70,7 +70,7 @@ Lite 版仍没有做到 WPF 版的全部成熟度。B 站 WebSocket 已有基础
 
 WinUI 3 本身会带来 Windows App SDK 运行时依赖。如果最终目标是尽可能小的安装包，建议控制台界面可以使用 WinUI，但透明叠加窗口和 OBS 服务仍优先保持 Win32 原生实现。
 
-如果要启用 B 站压缩弹幕包解压，可以使用 VS 自带 vcpkg 重新配置：
+使用 VS 自带 vcpkg 配置：
 
 ```powershell
 cmake -S windows-lite-native -B windows-lite-native/build-vcpkg -G Ninja `
@@ -78,6 +78,8 @@ cmake -S windows-lite-native -B windows-lite-native/build-vcpkg -G Ninja `
   -DCMAKE_TOOLCHAIN_FILE="C:/Program Files/Microsoft Visual Studio/2022/Community/VC/vcpkg/scripts/buildsystems/vcpkg.cmake"
 cmake --build windows-lite-native/build-vcpkg --config Debug
 ```
+
+如果只是做不连接真实直播间的本地 UI 实验，可以显式传入 `-DPITLANE_LITE_REQUIRE_COMPRESSION=OFF`，但这种构建不应用于发布或长时间直播测试。
 
 ## 打包和安装器
 
@@ -138,7 +140,7 @@ windows-lite-native/
 
 - 人看：当前它已经能打开一个 Win32 测试窗口，能连 B 站基础 WSS / WS 弹幕，能显示原生透明叠加层，也能启动基础 OBS 本地服务。
 - Agent 看：优先保持目录边界清晰，只改 `windows-lite-native/` 和必要的根文档；不要把 `build/`、`build-vs/`、`build-vcpkg/`、`dist/`、`installer/output/`、`BundleArtifacts/` 等构建产物提交；可用 `/health` 快速验证本地 OBS 服务。
-- 构建验证：普通构建可以用 `windows-lite-native/build-vs`；压缩包解码需要 vcpkg 能解析 `zlib` 和 `brotli`。
+- 构建验证：真实直播间测试和发布都使用 `windows-lite-native/build-vcpkg`；`build-vs` 只能作为显式关闭压缩依赖后的本地 UI 实验目录。
 - 已知缺口：真实直播间长时间测试、TCP 回退、完整 JSON 解析和最终 OBS 浏览器源视觉细节还要继续打磨。
 - 和 WPF 版关系：`windows-native/` 是当前可发布的 WPF/.NET 8 版本；`windows-lite-native/` 是长期减小体积、减少运行时依赖的 C++ 重写方向。
 

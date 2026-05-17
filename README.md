@@ -72,6 +72,7 @@ windows-lite-native
 
 - 已有可启动的 Win32 测试窗口。
 - 已接入基础 B 站 WSS / WS 弹幕、WBI 签名、buvid3 兜底、节点重试和脱敏昵称缓存。
+- lite 发布构建使用 vcpkg 启用 zlib/brotli，支持 B 站压缩弹幕包解码。
 - 已有原生透明叠加层预览，窗口尺寸会跟随同屏数和最大舞台宽度设置调整。
 - 已有基础 OBS 本地服务：`http://127.0.0.1:17333/overlay`、`/events`、`/assets/...`、`/health`。
 - 已有 OBS 浏览器源基础赛车发车动画，仍需继续打磨最终布局。
