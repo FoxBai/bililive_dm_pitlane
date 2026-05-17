@@ -20,7 +20,7 @@ std::wstring trim(std::wstring value) {
     return std::wstring(begin, end);
 }
 
-}  // namespace
+}  // 匿名命名空间
 
 std::optional<ChatMessage> normalize_message(const ChatMessage& message, const AppSettings& settings) {
     auto normalized = message;
@@ -73,4 +73,4 @@ std::wstring clean_text(std::wstring value, int max_length, int max_repeat_chara
     return trim(std::move(output));
 }
 
-}  // namespace pitlane::lite
+}  // 命名空间 pitlane::lite
