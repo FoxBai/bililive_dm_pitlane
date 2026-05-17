@@ -35,7 +35,7 @@ private:
     void serve_asset(std::uintptr_t socket_value, const std::wstring& path);
 
     static std::wstring read_request_path(std::uintptr_t socket_value);
-    static std::string build_overlay_html();
+    std::string build_overlay_html() const;
     static std::string message_json(const ChatMessage& message);
     static std::filesystem::path resolve_asset_path(const std::wstring& request_path);
     static void send_response(std::uintptr_t socket_value, int status, const char* reason, const char* content_type, const std::string& body);

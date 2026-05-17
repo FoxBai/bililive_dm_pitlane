@@ -38,6 +38,10 @@ constexpr int kOverlayVisibleId = 1004;
 constexpr int kConnectRoomId = 1005;
 constexpr int kAddCommentId = 1006;
 constexpr int kAddSuperChatId = 1007;
+constexpr int kObsPortEditId = 1008;
+constexpr int kMinVisibleEditId = 1009;
+constexpr int kMaxStageWidthEditId = 1010;
+constexpr int kRestartObsId = 1011;
 constexpr int kDrainTimerId = 2001;
 constexpr UINT kAppendLogMessage = WM_APP + 1;
 constexpr UINT kRealtimeChatMessage = WM_APP + 2;
@@ -59,9 +63,13 @@ struct AppState {
     pitlane::lite::MessagePipeline pipeline{settings};
     HWND room_edit = nullptr;
     HWND cookie_edit = nullptr;
+    HWND obs_port_edit = nullptr;
+    HWND min_visible_edit = nullptr;
+    HWND max_stage_width_edit = nullptr;
     HWND only_super_chat = nullptr;
     HWND overlay_visible = nullptr;
     HWND connect_button = nullptr;
+    HWND restart_obs_button = nullptr;
     HWND log_list = nullptr;
     HWND overlay = nullptr;
     std::shared_ptr<std::atomic_bool> stream_running = std::make_shared<std::atomic_bool>(false);
@@ -185,6 +193,23 @@ HWND add_edit(HWND parent, int id, int x, int y, int width, const wchar_t* text 
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
         GetModuleHandleW(nullptr),
         nullptr);
+}
+
+int parse_int_edit(HWND hwnd, int fallback) {
+    const auto text = get_window_text(hwnd);
+    if (text.empty()) {
+        return fallback;
+    }
+
+    try {
+        return std::stoi(text);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+void set_int_edit(HWND hwnd, int value) {
+    SetWindowTextW(hwnd, std::to_wstring(value).c_str());
 }
 
 HWND add_button(HWND parent, int id, int x, int y, int width, const wchar_t* text) {
@@ -356,9 +381,31 @@ void push_overlay_item(AppState& state, const pitlane::lite::ChatMessage& messag
 void sync_settings(AppState& state) {
     state.settings.room_input = get_window_text(state.room_edit);
     state.settings.cookie = get_window_text(state.cookie_edit);
+    state.settings.obs_port = parse_int_edit(state.obs_port_edit, state.settings.obs_port);
+    state.settings.min_visible_items = parse_int_edit(state.min_visible_edit, state.settings.min_visible_items);
+    state.settings.max_stage_width = parse_int_edit(state.max_stage_width_edit, state.settings.max_stage_width);
     state.settings.only_super_chat = SendMessageW(state.only_super_chat, BM_GETCHECK, 0, 0) == BST_CHECKED;
     state.settings.normalize();
+    set_int_edit(state.obs_port_edit, state.settings.obs_port);
+    set_int_edit(state.min_visible_edit, state.settings.min_visible_items);
+    set_int_edit(state.max_stage_width_edit, state.settings.max_stage_width);
     state.pipeline.update_settings(state.settings);
+}
+
+void restart_obs_server(HWND hwnd, AppState& state) {
+    sync_settings(state);
+    try {
+        state.obs_server.start(state.settings, obs_log_callback, hwnd);
+        append_log(state.log_list, L"OBS 本地服务已重启：" + state.obs_server.overlay_url());
+    } catch (const std::exception& ex) {
+        const std::string error_message = ex.what();
+        const int length = MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), nullptr, 0);
+        std::wstring wide(static_cast<std::size_t>(std::max(length, 0)), L'\0');
+        if (length > 0) {
+            MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), wide.data(), length);
+        }
+        append_log(state.log_list, L"OBS 本地服务重启失败：" + wide);
+    }
 }
 
 void enqueue_sample(AppState& state, pitlane::lite::ChatMessageKind kind) {
@@ -439,11 +486,15 @@ void layout(HWND hwnd, AppState& state) {
 
     MoveWindow(state.room_edit, edit_x, 16, edit_width, 28, TRUE);
     MoveWindow(state.cookie_edit, edit_x, 52, edit_width, 28, TRUE);
-    MoveWindow(state.only_super_chat, margin, 92, 180, 28, TRUE);
-    MoveWindow(state.overlay_visible, 220, 92, 160, 28, TRUE);
-    MoveWindow(state.connect_button, margin, 124, 128, 32, TRUE);
+    MoveWindow(state.obs_port_edit, 102, 88, 92, 28, TRUE);
+    MoveWindow(state.min_visible_edit, 298, 88, 72, 28, TRUE);
+    MoveWindow(state.max_stage_width_edit, 482, 88, 92, 28, TRUE);
+    MoveWindow(state.only_super_chat, margin, 126, 180, 28, TRUE);
+    MoveWindow(state.overlay_visible, 220, 126, 160, 28, TRUE);
+    MoveWindow(state.connect_button, margin, 160, 128, 32, TRUE);
+    MoveWindow(state.restart_obs_button, 156, 160, 128, 32, TRUE);
 
-    const int list_top = 164;
+    const int list_top = 206;
     MoveWindow(state.log_list, margin, list_top, rect.right - margin * 2, rect.bottom - list_top - margin, TRUE);
 }
 
@@ -505,16 +556,22 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
 
         add_label(hwnd, 16, 20, 86, L"直播间");
         add_label(hwnd, 16, 56, 86, L"Cookie");
+        add_label(hwnd, 16, 92, 86, L"OBS端口");
+        add_label(hwnd, 216, 92, 78, L"同屏数");
+        add_label(hwnd, 392, 92, 86, L"最大宽度");
 
         owned_state->room_edit = add_edit(hwnd, kRoomEditId, 102, 16, 420, L"");
         owned_state->cookie_edit = add_edit(hwnd, kCookieEditId, 102, 52, 420, L"");
+        owned_state->obs_port_edit = add_edit(hwnd, kObsPortEditId, 102, 88, 92, L"17333");
+        owned_state->min_visible_edit = add_edit(hwnd, kMinVisibleEditId, 298, 88, 72, L"5");
+        owned_state->max_stage_width_edit = add_edit(hwnd, kMaxStageWidthEditId, 482, 88, 92, L"3840");
         owned_state->only_super_chat = CreateWindowExW(
             0,
             L"BUTTON",
             L"仅显示醒目留言",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
             16,
-            92,
+            126,
             180,
             28,
             hwnd,
@@ -528,7 +585,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
             L"显示叠加预览",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
             220,
-            92,
+            126,
             160,
             28,
             hwnd,
@@ -537,9 +594,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
             nullptr);
         SendMessageW(owned_state->overlay_visible, BM_SETCHECK, BST_CHECKED, 0);
 
-        add_button(hwnd, kAddCommentId, 400, 90, 128, L"添加测试弹幕");
-        add_button(hwnd, kAddSuperChatId, 540, 90, 148, L"添加醒目留言");
-        owned_state->connect_button = add_button(hwnd, kConnectRoomId, 16, 124, 128, L"连接直播间");
+        add_button(hwnd, kAddCommentId, 400, 124, 128, L"添加测试弹幕");
+        add_button(hwnd, kAddSuperChatId, 540, 124, 148, L"添加醒目留言");
+        owned_state->connect_button = add_button(hwnd, kConnectRoomId, 16, 160, 128, L"连接直播间");
+        owned_state->restart_obs_button = add_button(hwnd, kRestartObsId, 156, 160, 128, L"重启OBS服务");
 
         owned_state->log_list = CreateWindowExW(
             WS_EX_CLIENTEDGE,
@@ -547,7 +605,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
             nullptr,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOINTEGRALHEIGHT,
             16,
-            140,
+            206,
             520,
             240,
             hwnd,
@@ -561,17 +619,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owned_state.release()));
         raw_state->overlay = create_overlay_window(hwnd, *raw_state);
         sync_overlay_visibility(*raw_state);
-        try {
-            raw_state->obs_server.start(raw_state->settings, obs_log_callback, hwnd);
-        } catch (const std::exception& ex) {
-            const std::string error_message = ex.what();
-            const int length = MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), nullptr, 0);
-            std::wstring wide(static_cast<std::size_t>(std::max(length, 0)), L'\0');
-            if (length > 0) {
-                MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), wide.data(), length);
-            }
-            append_log(raw_state->log_list, L"OBS 本地服务启动失败：" + wide);
-        }
+        restart_obs_server(hwnd, *raw_state);
         SetTimer(hwnd, kDrainTimerId, 150, nullptr);
         return 0;
     }
@@ -595,6 +643,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
 
         case kOverlayVisibleId:
             sync_overlay_visibility(*state);
+            return 0;
+
+        case kRestartObsId:
+            restart_obs_server(hwnd, *state);
             return 0;
 
         case kConnectRoomId:

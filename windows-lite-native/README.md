@@ -36,6 +36,8 @@ windows-lite-native/build-vs/pitlane_lite.exe
 
 - 直播间输入框。
 - Cookie 输入框。
+- OBS 端口、同屏数量和最大舞台宽度输入框。
+- 重启 OBS 服务按钮，用于应用 OBS 相关设置。
 - 连接直播间按钮，会用 WinHTTP 访问 B 站真实 API，解析真实房间号、获取弹幕服务器信息并尝试建立 WSS 实时弹幕连接；连接中再次点击可断开。
 - 未提供 buvid3 时，会自动请求 B 站指纹接口获取兜底值并用于握手。
 - 获取弹幕服务器信息时会使用 WBI 签名参数。
@@ -46,10 +48,10 @@ windows-lite-native/build-vs/pitlane_lite.exe
 - 消息队列、文字清洗、醒目留言过滤和同 UID 昵称缓存预览。
 - B 站返回脱敏昵称时，同 UID 有缓存会恢复完整名；没有缓存时会跳过该条，避免画面显示星号名。
 - 透明、置顶、鼠标穿透的 Win32 叠加层预览。
-- OBS 本地服务预览：`http://127.0.0.1:17333/overlay`、`/events` 和 `/assets/...`。
+- OBS 本地服务预览：`http://127.0.0.1:17333/overlay`、`/events`、`/assets/...` 和 `/health`，浏览器源会使用评论框和赛车 PNG 做基础发车动画。
 - 从仓库 `assets/` 加载评论框 PNG、赛车 PNG 和 HarmonyOS 中文字体。
 
-它还没有接入赛车发车动画和安装器。B 站 WebSocket 已有基础连接、WBI 签名、鉴权、心跳、可断开接收循环、未压缩 JSON 弹幕解析、buvid3 兜底和同 UID 脱敏昵称缓存；OBS 本地服务已有基础 HTTP/SSE 链路；更完整的消息解析还需要继续补。
+它还没有接入 lite 安装器。B 站 WebSocket 已有基础连接、WBI 签名、鉴权、心跳、可断开接收循环、未压缩 JSON 弹幕解析、buvid3 兜底和同 UID 脱敏昵称缓存；OBS 本地服务已有基础 HTTP/SSE 链路和浏览器源发车动画预览；更完整的消息解析还需要继续补。
 
 压缩弹幕包的原生解压代码已经接入 `zlib` 和 `brotli`，但它是可选编译能力：CMake 找到这两个原生库时会定义 `PITLANE_LITE_HAS_COMPRESSION`、握手请求 `protover:3` 并启用 version 2/3 解包；找不到时会请求 `protover:0`，仍可编译运行。
 
@@ -97,15 +99,15 @@ windows-lite-native/
 这个目录是给“小体积原生版”单独推进的，不是 WPF 版安装包目录。
 
 - 人看：当前它已经能打开一个 Win32 测试窗口，能连 B 站基础 WSS 弹幕，能显示原生透明叠加层，也能启动基础 OBS 本地服务。
-- Agent 看：优先保持目录边界清晰，只改 `windows-lite-native/` 和必要的根文档；不要把 `build/`、`build-vs/`、`build-vcpkg/`、`BundleArtifacts/` 等构建产物提交。
+- Agent 看：优先保持目录边界清晰，只改 `windows-lite-native/` 和必要的根文档；不要把 `build/`、`build-vs/`、`build-vcpkg/`、`BundleArtifacts/` 等构建产物提交；可用 `/health` 快速验证本地 OBS 服务。
 - 构建验证：普通构建可以用 `windows-lite-native/build-vs`；压缩包解码需要 vcpkg 能解析 `zlib` 和 `brotli`。
-- 已知缺口：赛车发车动画、最终 OBS 浏览器源布局、TCP 回退、完整 JSON 解析、小体积安装器还没完成。
+- 已知缺口：最终 OBS 浏览器源布局打磨、TCP 回退、完整 JSON 解析、小体积安装器还没完成。
 - 和 WPF 版关系：`windows-native/` 是当前可发布的 WPF/.NET 8 版本；`windows-lite-native/` 是长期减小体积、减少运行时依赖的 C++ 重写方向。
 
 ## 下一阶段
 
 1. 创建 WinUI/C++ 应用壳和设置页。
 2. 完善 B 站 websocket/TCP 弹幕客户端，包括压缩包解压和 TCP 回退。
-3. 完善本地 OBS HTTP/SSE 服务的最终浏览器源布局。
+3. 打磨本地 OBS HTTP/SSE 服务的最终浏览器源布局。
 4. 使用 Win32 layered window 或 Direct2D 渲染叠加层。
 5. 增加小体积原生安装器。

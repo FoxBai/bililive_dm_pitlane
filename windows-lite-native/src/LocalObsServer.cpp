@@ -238,6 +238,20 @@ void LocalObsServer::handle_client(std::uintptr_t socket_value) {
         return;
     }
 
+    if (path == L"/health") {
+        std::ostringstream body;
+        body << "{\"status\":\"ok\",\"overlayUrl\":\""
+             << json_escape(wide_to_utf8(overlay_url()))
+             << "\",\"minVisibleItems\":"
+             << settings_.min_visible_items
+             << ",\"maxStageWidth\":"
+             << settings_.max_stage_width
+             << "}";
+        send_response(socket_value, 200, "OK", "application/json; charset=utf-8", body.str());
+        closesocket(as_socket(socket_value));
+        return;
+    }
+
     if (path == L"/events") {
         handle_events(socket_value);
         return;
@@ -313,49 +327,210 @@ std::wstring LocalObsServer::read_request_path(std::uintptr_t socket_value) {
     return utf8_to_wide(target);
 }
 
-std::string LocalObsServer::build_overlay_html() {
-    return R"html(<!doctype html>
+std::string LocalObsServer::build_overlay_html() const {
+    std::ostringstream html;
+    html << R"html(<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pitlane Danmaku Lite Overlay</title>
   <style>
-    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
-    #stage { position: relative; width: 100%; height: 100%; }
-    .item { position: absolute; left: 24px; min-width: 820px; max-width: 1180px; padding: 26px 38px; color: #fff; background: rgba(20,22,28,.82); border: 2px solid rgba(255,255,255,.18); border-radius: 18px; text-shadow: 0 3px 8px rgba(0,0,0,.55); transition: transform .45s ease, opacity .45s ease; }
-    .name { font-size: 70px; line-height: 1; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .text { margin-top: 18px; font-size: 62px; line-height: 1.16; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .superchat { border-color: #fde68a; background: rgba(154,96,20,.88); }
+    @font-face {
+      font-family: "HarmonyOS Sans SC";
+      src: url("/assets/fonts/HarmonyOS_Sans_SC_Regular.ttf") format("truetype");
+      font-weight: 400;
+    }
+    @font-face {
+      font-family: "HarmonyOS Sans SC";
+      src: url("/assets/fonts/HarmonyOS_Sans_SC_Bold.ttf") format("truetype");
+      font-weight: 900;
+    }
+    html, body, #stage {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      font-family: "HarmonyOS Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    .item {
+      position: absolute;
+      width: 1280px;
+      height: 900px;
+      left: 0;
+      bottom: 10px;
+      transform-origin: left bottom;
+      will-change: transform, opacity;
+      opacity: 1;
+    }
+    .frame {
+      position: absolute;
+      inset: 0;
+      width: 1280px;
+      height: 900px;
+      object-fit: contain;
+    }
+    .car {
+      position: absolute;
+      left: 650px;
+      object-fit: contain;
+      pointer-events: none;
+      filter: drop-shadow(0 10px 10px rgba(0,0,0,.22));
+    }
+    .text {
+      position: absolute;
+      left: 82px;
+      top: 318px;
+      width: 650px;
+      color: white;
+      text-shadow: 0 3px 8px rgba(0,0,0,.55);
+    }
+    .name {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      max-width: 620px;
+      font-size: 70px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .message {
+      margin-top: 28px;
+      max-height: 280px;
+      font-size: 62px;
+      line-height: 93px;
+      font-weight: 650;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .badge {
+      display: none;
+      flex: 0 0 auto;
+      padding: 7px 14px 8px;
+      border-radius: 10px;
+      color: #16120a;
+      background: #fde68a;
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 900;
+      text-shadow: none;
+    }
+    .superchat .badge {
+      display: inline-block;
+    }
+    .superchat .name {
+      max-width: 500px;
+    }
   </style>
 </head>
 <body>
   <div id="stage"></div>
   <script>
     const stage = document.getElementById("stage");
+    const framePath = "/assets/comment-box/comment_frame.png";
+    const cars = [
+      { id: "car_01", url: "/assets/cars/car_01.png", width: 555, height: 215 },
+      { id: "car_02", url: "/assets/cars/car_02.png", width: 531, height: 215 },
+      { id: "car_03", url: "/assets/cars/car_03.png", width: 562, height: 209 },
+      { id: "car_04", url: "/assets/cars/car_04.png", width: 555, height: 209 },
+      { id: "car_05", url: "/assets/cars/car_05.png", width: 585, height: 200 },
+      { id: "car_06", url: "/assets/cars/car_06.png", width: 556, height: 201 },
+      { id: "car_07", url: "/assets/cars/car_07.png", width: 570, height: 203 },
+      { id: "car_08", url: "/assets/cars/car_08.png", width: 556, height: 202 },
+      { id: "car_09", url: "/assets/cars/car_09.png", width: 591, height: 206 },
+      { id: "car_10", url: "/assets/cars/car_10.png", width: 595, height: 207 }
+    ];
     const items = [];
+    const baseWidth = 1280;
+    const baseHeight = 900;
+    const baseGap = 36;
+    const minVisible = )html"
+         << settings_.min_visible_items
+         << R"html(;
+    const maxStageWidth = )html"
+         << settings_.max_stage_width
+         << R"html(;
+    const carBottom = 48;
+
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
     }
+    function pickCar() {
+      return cars[Math.floor(Math.random() * cars.length)];
+    }
+    function scaleForStage() {
+      const heightScale = Math.max(0.2, (stage.clientHeight - 10) / baseHeight);
+      const widthScale = Math.max(0.2, stage.clientWidth / (minVisible * baseWidth + (minVisible - 1) * baseGap));
+      return Math.min(1, heightScale, widthScale);
+    }
     function layout() {
-      items.forEach((node, index) => {
-        node.style.transform = `translateY(${24 + index * 206}px)`;
-        node.style.opacity = index > 4 ? "0" : "1";
-      });
-      while (items.length > 6) items.pop().remove();
+      const scale = scaleForStage();
+      const width = stage.clientWidth;
+      const itemWidth = baseWidth * scale;
+      const gap = baseGap * scale;
+      const capacity = Math.max(minVisible, Math.floor(Math.min(width, maxStageWidth) / (itemWidth + gap)));
+      while (items.filter(item => !item.leaving).length > capacity) {
+        const item = items.pop();
+        if (!item) break;
+        item.leaving = true;
+        item.target = width + itemWidth;
+        items.unshift(item);
+      }
+
+      let cursor = width - itemWidth - 10;
+      for (let index = items.length - 1; index >= 0; index--) {
+        const item = items[index];
+        item.scale = scale;
+        if (!item.leaving) {
+          item.target = Math.max(-itemWidth, cursor);
+          cursor -= itemWidth + gap;
+        }
+      }
     }
     function addMessage(message) {
+      const car = pickCar();
+      const carTop = baseHeight - car.height - carBottom;
       const node = document.createElement("div");
       node.className = `item ${message.kind === "superchat" ? "superchat" : "comment"}`;
-      node.innerHTML = `<div class="name">${escapeHtml(message.userName)}</div><div class="text">${escapeHtml(message.text)}</div>`;
-      stage.prepend(node);
-      items.unshift(node);
+      node.innerHTML = `
+        <img class="frame" src="${framePath}" alt="">
+        <img class="car" src="${car.url}" alt="" style="top:${carTop}px;width:${car.width}px;height:${car.height}px">
+        <div class="text">
+          <div class="name"><span class="badge">SC</span><span>${escapeHtml(message.userName)}</span></div>
+          <div class="message">${escapeHtml(message.text)}</div>
+        </div>`;
+      stage.appendChild(node);
+      items.unshift({ node, x: -baseWidth, target: 0, scale: scaleForStage(), leaving: false });
       layout();
     }
+    function tick() {
+      for (let index = items.length - 1; index >= 0; index--) {
+        const item = items[index];
+        const pressure = Math.min(1, items.length / Math.max(1, minVisible + 3));
+        const easing = item.leaving ? 0.075 : 0.045 + pressure * 0.035;
+        item.x += (item.target - item.x) * easing;
+        item.node.style.transform = `translateX(${item.x}px) scale(${item.scale})`;
+        item.node.style.opacity = item.leaving ? "0" : "1";
+        if (item.leaving && item.x > stage.clientWidth + baseWidth) {
+          item.node.remove();
+          items.splice(index, 1);
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    addEventListener("resize", layout);
     new EventSource("/events").onmessage = event => addMessage(JSON.parse(event.data));
+    requestAnimationFrame(tick);
   </script>
 </body>
 </html>)html";
+    return html.str();
 }
 
 std::string LocalObsServer::message_json(const ChatMessage& message) {

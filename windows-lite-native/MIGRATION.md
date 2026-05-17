@@ -51,8 +51,9 @@ Lite 第一阶段可以先省略 `/overlay` 的 HTML 浏览器源，只驱动原
 - `GET /overlay`
 - `GET /events`
 - `GET /assets/...`
+- `GET /health`
 
-后续需要把 `/overlay` 的 HTML 布局升级到与 WPF 版 OBS 浏览器源一致的赛车发车动画。
+`/overlay` 已经接入评论框 PNG、赛车 PNG 和基础横向发车动画，并会读取 `min_visible_items` 和 `max_stage_width` 设置。后续需要继续打磨到与 WPF 版 OBS 浏览器源一致的节奏和布局细节。
 
 ### B 站弹幕客户端
 
@@ -83,8 +84,9 @@ Lite 应用应尽量只依赖现代 Windows 已经具备的组件。如果使用
 2. 原生消息队列和文字清洗。已完成。
 3. Win32 透明叠加窗口。已完成基础预览。
 4. 从仓库加载现有 `assets/comment-box/comment_frame.png`、赛车图片和字体。已完成基础接入。
-5. 实现赛车发车动画。
+5. 实现赛车发车动画。已完成 OBS 浏览器源基础版本，原生透明窗口动画还需要继续打磨。
 6. 接入 B 站 WebSocket 握手、心跳、解包和消息解析。已完成基础未压缩 JSON 流、心跳、可断开连接和可选压缩包解析。
 7. 接入 OBS 本地 HTTP/SSE 服务。已完成基础 `/overlay`、`/events` 和 `/assets/...`。
+8. 在控制窗口中暴露 OBS 端口、同屏数量和最大舞台宽度。已完成基础输入和重启服务按钮。
 
 以上稳定后，再迁移真实 B 站弹幕抓取。
