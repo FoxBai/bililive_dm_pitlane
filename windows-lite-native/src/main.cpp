@@ -15,6 +15,7 @@
 #include "ChatMessage.h"
 #include "LocalObsServer.h"
 #include "MessagePipeline.h"
+#include "SettingsStore.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -212,6 +213,15 @@ void set_int_edit(HWND hwnd, int value) {
     SetWindowTextW(hwnd, std::to_wstring(value).c_str());
 }
 
+void apply_settings_to_controls(AppState& state) {
+    SetWindowTextW(state.room_edit, state.settings.room_input.c_str());
+    SetWindowTextW(state.cookie_edit, state.settings.cookie.c_str());
+    set_int_edit(state.obs_port_edit, state.settings.obs_port);
+    set_int_edit(state.min_visible_edit, state.settings.min_visible_items);
+    set_int_edit(state.max_stage_width_edit, state.settings.max_stage_width);
+    SendMessageW(state.only_super_chat, BM_SETCHECK, state.settings.only_super_chat ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
 HWND add_button(HWND parent, int id, int x, int y, int width, const wchar_t* text) {
     return CreateWindowExW(
         0,
@@ -295,7 +305,11 @@ void paint_overlay(HWND hwnd, AppState& state) {
     Gdiplus::Graphics graphics(dc);
     graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
 
-    const auto first = state.overlay_items.size() > 2 ? state.overlay_items.size() - 2 : 0;
+    const int available_height = std::max(1, static_cast<int>(client.bottom) - margin * 2);
+    const auto capacity = static_cast<std::size_t>((available_height + 22) / (item_height + 22));
+    const auto requested = static_cast<std::size_t>(state.settings.min_visible_items);
+    const auto visible_count = std::min(state.overlay_items.size(), std::min(capacity, requested));
+    const auto first = state.overlay_items.size() - visible_count;
     for (std::size_t i = first; i < state.overlay_items.size(); ++i) {
         const auto& item = state.overlay_items[i];
         RECT bubble{
@@ -368,7 +382,7 @@ void push_overlay_item(AppState& state, const pitlane::lite::ChatMessage& messag
         .car_index = state.next_car_index++,
     });
 
-    constexpr std::size_t max_items = 5;
+    const auto max_items = static_cast<std::size_t>(std::max(5, state.settings.min_visible_items + 3));
     if (state.overlay_items.size() > max_items) {
         state.overlay_items.erase(state.overlay_items.begin(), state.overlay_items.end() - max_items);
     }
@@ -376,6 +390,26 @@ void push_overlay_item(AppState& state, const pitlane::lite::ChatMessage& messag
     if (state.overlay != nullptr) {
         InvalidateRect(state.overlay, nullptr, FALSE);
     }
+}
+
+void resize_overlay_window(AppState& state) {
+    if (state.overlay == nullptr) {
+        return;
+    }
+
+    const int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    const int screen_height = GetSystemMetrics(SM_CYSCREEN);
+    const int target_width = std::clamp(state.settings.max_stage_width, 960, std::max(960, screen_width));
+    const int wanted_height = 48 + state.settings.min_visible_items * 280;
+    const int target_height = std::clamp(wanted_height, 360, std::max(360, screen_height));
+    SetWindowPos(
+        state.overlay,
+        HWND_TOPMOST,
+        0,
+        0,
+        target_width,
+        target_height,
+        SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
 void sync_settings(AppState& state) {
@@ -390,6 +424,8 @@ void sync_settings(AppState& state) {
     set_int_edit(state.min_visible_edit, state.settings.min_visible_items);
     set_int_edit(state.max_stage_width_edit, state.settings.max_stage_width);
     state.pipeline.update_settings(state.settings);
+    pitlane::lite::SettingsStore::save(state.settings);
+    resize_overlay_window(state);
 }
 
 void restart_obs_server(HWND hwnd, AppState& state) {
@@ -553,6 +589,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
     switch (message) {
     case WM_CREATE: {
         auto owned_state = std::make_unique<AppState>();
+        owned_state->settings = pitlane::lite::SettingsStore::load();
+        owned_state->pipeline.update_settings(owned_state->settings);
 
         add_label(hwnd, 16, 20, 86, L"直播间");
         add_label(hwnd, 16, 56, 86, L"Cookie");
@@ -593,6 +631,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
             GetModuleHandleW(nullptr),
             nullptr);
         SendMessageW(owned_state->overlay_visible, BM_SETCHECK, BST_CHECKED, 0);
+        apply_settings_to_controls(*owned_state);
 
         add_button(hwnd, kAddCommentId, 400, 124, 128, L"添加测试弹幕");
         add_button(hwnd, kAddSuperChatId, 540, 124, 148, L"添加醒目留言");
@@ -708,6 +747,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
     case WM_DESTROY:
         KillTimer(hwnd, kDrainTimerId);
         if (state != nullptr) {
+            sync_settings(*state);
             state->stream_running->store(false);
             state->obs_server.stop();
         }

@@ -37,10 +37,10 @@ public:
         MessageCallback on_message,
         LogCallback on_log,
         const std::shared_ptr<std::atomic_bool>& running) const;
+    static std::wstring build_cookie_header(const AppSettings& settings);
 
 private:
     static int parse_room_id(const std::wstring& input);
-    static std::wstring build_cookie_header(const AppSettings& settings);
     static std::wstring build_wbi_signed_query(
         const std::vector<std::pair<std::wstring, std::wstring>>& parameters,
         const AppSettings& settings);

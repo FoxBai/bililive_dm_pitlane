@@ -6,6 +6,7 @@ add_library(pitlane_lite_core STATIC
     src/BilibiliClient.cpp
     src/LocalObsServer.cpp
     src/MessagePipeline.cpp
+    src/SettingsStore.cpp
     src/TextSanitizer.cpp
 )
 

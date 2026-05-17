@@ -140,6 +140,10 @@ bool cookie_contains(const std::wstring& cookie, const std::wstring& name) {
     return lower(cookie).find(lower(needle)) != std::wstring::npos;
 }
 
+std::wstring endpoint_name(const DanmakuHost& host, bool secure) {
+    return host.host + L":" + std::to_wstring(secure ? host.secure_websocket_port : host.websocket_port);
+}
+
 bool contains_masked_name(const std::wstring& name) {
     return name.find(L'*') != std::wstring::npos || name.find(L'＊') != std::wstring::npos;
 }
@@ -546,6 +550,187 @@ void process_packet_payload(
     }
 }
 
+void sleep_until_retry(const std::shared_ptr<std::atomic_bool>& running) {
+    for (int i = 0; i < 50 && running->load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
+
+void stream_websocket_endpoint(
+    const AppSettings& settings,
+    const BilibiliConnectionInfo& info,
+    const DanmakuHost& host,
+    bool secure,
+    const BilibiliClient::MessageCallback& on_message,
+    const BilibiliClient::LogCallback& on_log,
+    const std::shared_ptr<std::atomic_bool>& running,
+    std::unordered_map<long long, std::wstring>& user_name_cache,
+    bool& masked_name_warned,
+    long long& received_count) {
+    const auto port = secure ? host.secure_websocket_port : host.websocket_port;
+    if (port <= 0) {
+        throw std::runtime_error("弹幕服务器端口无效。");
+    }
+
+    WinHttpHandle session(WinHttpOpen(
+        settings.user_agent.empty() ? L"PitlaneDanmakuLite/0.1" : settings.user_agent.c_str(),
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0));
+    if (!session) {
+        throw std::runtime_error("WinHTTP 初始化失败。");
+    }
+    WinHttpSetTimeouts(session.value, 5000, 5000, 5000, 5000);
+
+    WinHttpHandle connection(WinHttpConnect(session.value, host.host.c_str(), static_cast<INTERNET_PORT>(port), 0));
+    if (!connection) {
+        throw std::runtime_error("连接弹幕服务器失败。");
+    }
+
+    WinHttpHandle request(WinHttpOpenRequest(
+        connection.value,
+        L"GET",
+        L"/sub",
+        nullptr,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        secure ? WINHTTP_FLAG_SECURE : 0));
+    if (!request) {
+        throw std::runtime_error("创建 WebSocket 请求失败。");
+    }
+
+    std::wstring headers =
+        L"Origin: https://live.bilibili.com\r\n"
+        L"Referer: https://live.bilibili.com/" + std::to_wstring(info.resolved_room_id) + L"\r\n";
+    const auto cookie = BilibiliClient::build_cookie_header(settings);
+    if (!cookie.empty()) {
+        headers += L"Cookie: " + cookie + L"\r\n";
+    }
+
+    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
+        throw std::runtime_error("设置 WebSocket 升级失败。");
+    }
+
+    if (!WinHttpSendRequest(
+            request.value,
+            headers.c_str(),
+            static_cast<DWORD>(headers.size()),
+            WINHTTP_NO_REQUEST_DATA,
+            0,
+            0,
+            0) ||
+        !WinHttpReceiveResponse(request.value, nullptr)) {
+        throw std::runtime_error("WebSocket 握手失败。");
+    }
+
+    WinHttpHandle socket(WinHttpWebSocketCompleteUpgrade(request.value, 0));
+    request.value = nullptr;
+    if (!socket) {
+        throw std::runtime_error("WebSocket 升级失败。");
+    }
+
+    on_log(std::wstring(L"已连接 ") + (secure ? L"WSS" : L"WS") + L" 弹幕服务器 " + endpoint_name(host, secure));
+
+    const auto auth_packet = build_auth_packet(settings, info.resolved_room_id, info.token);
+    if (WinHttpWebSocketSend(
+            socket.value,
+            WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
+            const_cast<char*>(auth_packet.data()),
+            static_cast<DWORD>(auth_packet.size())) != NO_ERROR) {
+        throw std::runtime_error("发送弹幕认证包失败。");
+    }
+
+    std::atomic_bool socket_open{true};
+    std::thread heartbeat([&]() {
+        while (running->load() && socket_open.load()) {
+            for (int i = 0; i < 30 && running->load() && socket_open.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+            if (!running->load() || !socket_open.load()) {
+                break;
+            }
+            const auto heartbeat_packet = build_packet(2, 1, {});
+            WinHttpWebSocketSend(
+                socket.value,
+                WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
+                const_cast<char*>(heartbeat_packet.data()),
+                static_cast<DWORD>(heartbeat_packet.size()));
+        }
+    });
+
+    auto cached_on_message = [&](ChatMessage message) {
+        if (message.user_id.has_value() && *message.user_id > 0) {
+            if (looks_masked_name(message.user_name)) {
+                const auto cached = user_name_cache.find(*message.user_id);
+                if (cached != user_name_cache.end()) {
+                    message.user_name = cached->second;
+                } else {
+                    if (!masked_name_warned) {
+                        masked_name_warned = true;
+                        on_log(L"收到 B站返回的脱敏昵称，已跳过无法恢复的弹幕；如仍频繁出现，请填写登录后的网页 Cookie。");
+                    }
+                    return;
+                }
+            } else if (!message.user_name.empty() && !contains_masked_name(message.user_name)) {
+                user_name_cache[*message.user_id] = message.user_name;
+            }
+        }
+
+        ++received_count;
+        if (received_count <= 5 || received_count % 20 == 0) {
+            on_log(L"已接收 B站实时弹幕 " + std::to_wstring(received_count) + L" 条。");
+        }
+        on_message(std::move(message));
+    };
+
+    std::string message_buffer;
+    std::vector<char> buffer(64 * 1024);
+    try {
+        while (running->load()) {
+            DWORD bytes_read = 0;
+            WINHTTP_WEB_SOCKET_BUFFER_TYPE buffer_type{};
+            const DWORD error = WinHttpWebSocketReceive(
+                socket.value,
+                buffer.data(),
+                static_cast<DWORD>(buffer.size()),
+                &bytes_read,
+                &buffer_type);
+            if (error != NO_ERROR) {
+                if (error == ERROR_WINHTTP_TIMEOUT) {
+                    continue;
+                }
+                throw std::runtime_error("读取 WebSocket 数据失败：" + std::to_string(error));
+            }
+
+            if (buffer_type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
+                on_log(L"弹幕服务器已关闭连接。");
+                break;
+            }
+
+            message_buffer.append(buffer.data(), buffer.data() + bytes_read);
+            if (buffer_type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE ||
+                buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) {
+                process_packet_payload(message_buffer, cached_on_message, on_log);
+                message_buffer.clear();
+            }
+        }
+    } catch (...) {
+        socket_open.store(false);
+        WinHttpWebSocketClose(socket.value, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
+        if (heartbeat.joinable()) {
+            heartbeat.join();
+        }
+        throw;
+    }
+
+    socket_open.store(false);
+    WinHttpWebSocketClose(socket.value, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
+    if (heartbeat.joinable()) {
+        heartbeat.join();
+    }
+}
+
 }  // 匿名命名空间
 
 BilibiliConnectionInfo BilibiliClient::fetch_connection_info(const AppSettings& settings) const {
@@ -588,6 +773,7 @@ void BilibiliClient::stream_messages(
     LogCallback on_log,
     const std::shared_ptr<std::atomic_bool>& running) const {
     auto effective_settings = settings;
+    effective_settings.normalize();
     if (!cookie_contains(effective_settings.cookie, L"buvid3") && trim(effective_settings.buvid3).empty()) {
         try {
             effective_settings.buvid3 = fetch_buvid3(effective_settings);
@@ -599,164 +785,70 @@ void BilibiliClient::stream_messages(
         }
     }
 
+    if (extract_uid(effective_settings.cookie).has_value()) {
+        on_log(L"已检测到登录 Cookie，将使用登录 uid 进行弹幕握手。");
+    } else {
+        on_log(L"未检测到登录 Cookie uid；如一段时间后昵称被 B站脱敏，请粘贴登录后的网页 Cookie。");
+    }
+
     auto info = fetch_connection_info(effective_settings);
     if (info.hosts.empty()) {
         throw std::runtime_error("没有可用的弹幕服务器。");
     }
 
-    const auto& host = info.hosts.front();
-    WinHttpHandle session(WinHttpOpen(
-        effective_settings.user_agent.empty() ? L"PitlaneDanmakuLite/0.1" : effective_settings.user_agent.c_str(),
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
-        0));
-    if (!session) {
-        throw std::runtime_error("WinHTTP 初始化失败。");
-    }
-    WinHttpSetTimeouts(session.value, 5000, 5000, 5000, 5000);
-
-    WinHttpHandle connection(WinHttpConnect(session.value, host.host.c_str(), static_cast<INTERNET_PORT>(host.secure_websocket_port), 0));
-    if (!connection) {
-        throw std::runtime_error("连接弹幕服务器失败。");
-    }
-
-    WinHttpHandle request(WinHttpOpenRequest(
-        connection.value,
-        L"GET",
-        L"/sub",
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        WINHTTP_FLAG_SECURE));
-    if (!request) {
-        throw std::runtime_error("创建 WebSocket 请求失败。");
-    }
-
-    std::wstring headers =
-        L"Origin: https://live.bilibili.com\r\n"
-        L"Referer: https://live.bilibili.com/" + std::to_wstring(info.resolved_room_id) + L"\r\n";
-    const auto cookie = build_cookie_header(effective_settings);
-    if (!cookie.empty()) {
-        headers += L"Cookie: " + cookie + L"\r\n";
-    }
-
-    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
-        throw std::runtime_error("设置 WebSocket 升级失败。");
-    }
-
-    if (!WinHttpSendRequest(
-            request.value,
-            headers.c_str(),
-            static_cast<DWORD>(headers.size()),
-            WINHTTP_NO_REQUEST_DATA,
-            0,
-            0,
-            0) ||
-        !WinHttpReceiveResponse(request.value, nullptr)) {
-        throw std::runtime_error("WebSocket 握手失败。");
-    }
-
-    WinHttpHandle socket(WinHttpWebSocketCompleteUpgrade(request.value, 0));
-    request.value = nullptr;
-    if (!socket) {
-        throw std::runtime_error("WebSocket 升级失败。");
-    }
-
-    on_log(L"已连接 WSS 弹幕服务器 " + host.host + L":" + std::to_wstring(host.secure_websocket_port));
-
-    const auto auth_packet = build_auth_packet(effective_settings, info.resolved_room_id, info.token);
-    if (WinHttpWebSocketSend(
-            socket.value,
-            WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
-            const_cast<char*>(auth_packet.data()),
-            static_cast<DWORD>(auth_packet.size())) != NO_ERROR) {
-        throw std::runtime_error("发送弹幕认证包失败。");
-    }
-
     std::unordered_map<long long, std::wstring> user_name_cache;
     bool masked_name_warned = false;
-    auto cached_on_message = [&](ChatMessage message) {
-        if (message.user_id.has_value() && *message.user_id > 0) {
-            if (looks_masked_name(message.user_name)) {
-                const auto cached = user_name_cache.find(*message.user_id);
-                if (cached != user_name_cache.end()) {
-                    message.user_name = cached->second;
-                } else {
-                    if (!masked_name_warned) {
-                        masked_name_warned = true;
-                        on_log(L"收到 B站返回的脱敏昵称，已跳过无法恢复的弹幕；如仍频繁出现，请填写登录后的网页 Cookie。");
-                    }
-                    return;
-                }
-            } else if (!message.user_name.empty() && !contains_masked_name(message.user_name)) {
-                user_name_cache[*message.user_id] = message.user_name;
-            }
-        }
-        on_message(std::move(message));
-    };
+    long long received_count = 0;
+    on_log(L"B站真实房间号：" + std::to_wstring(info.resolved_room_id) + L"，可用弹幕服务器：" + std::to_wstring(info.hosts.size()) + L" 个。");
 
-    std::thread heartbeat([&]() {
-        while (running->load()) {
-            for (int i = 0; i < 30 && running->load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
+    while (running->load()) {
+        for (const auto& host : info.hosts) {
             if (!running->load()) {
                 break;
             }
-            const auto heartbeat_packet = build_packet(2, 1, {});
-            WinHttpWebSocketSend(
-                socket.value,
-                WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
-                const_cast<char*>(heartbeat_packet.data()),
-                static_cast<DWORD>(heartbeat_packet.size()));
-        }
-    });
 
-    std::string message_buffer;
-    std::vector<char> buffer(64 * 1024);
-    try {
-        while (running->load()) {
-            DWORD bytes_read = 0;
-            WINHTTP_WEB_SOCKET_BUFFER_TYPE buffer_type{};
-            const DWORD error = WinHttpWebSocketReceive(
-                socket.value,
-                buffer.data(),
-                static_cast<DWORD>(buffer.size()),
-                &bytes_read,
-                &buffer_type);
-            if (error != NO_ERROR) {
-                if (error == ERROR_WINHTTP_TIMEOUT) {
+            bool connected = false;
+            for (const bool secure : {true, false}) {
+                if (!running->load()) {
+                    break;
+                }
+                if ((secure && host.secure_websocket_port <= 0) || (!secure && host.websocket_port <= 0)) {
                     continue;
                 }
-                throw std::runtime_error("读取 WebSocket 数据失败：" + std::to_string(error));
-            }
 
-            if (buffer_type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
-                on_log(L"弹幕服务器已关闭连接。");
-                break;
+                try {
+                    stream_websocket_endpoint(
+                        effective_settings,
+                        info,
+                        host,
+                        secure,
+                        on_message,
+                        on_log,
+                        running,
+                        user_name_cache,
+                        masked_name_warned,
+                        received_count);
+                    connected = true;
+                    break;
+                } catch (const std::exception& ex) {
+                    const std::string error_message = ex.what();
+                    const int length = MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), nullptr, 0);
+                    std::wstring wide(static_cast<std::size_t>(std::max(length, 0)), L'\0');
+                    if (length > 0) {
+                        MultiByteToWideChar(CP_UTF8, 0, error_message.data(), static_cast<int>(error_message.size()), wide.data(), length);
+                    }
+                    on_log(std::wstring(secure ? L"WSS" : L"WS") + L" 弹幕服务器 " + endpoint_name(host, secure) + L" 断开：" + wide);
+                }
             }
-
-            message_buffer.append(buffer.data(), buffer.data() + bytes_read);
-            if (buffer_type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE ||
-                buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) {
-                process_packet_payload(message_buffer, cached_on_message, on_log);
-                message_buffer.clear();
+            if (connected && running->load()) {
+                on_log(L"当前弹幕服务器连接结束，正在尝试下一个节点。");
             }
         }
-    } catch (...) {
-        running->store(false);
-        WinHttpWebSocketClose(socket.value, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
-        if (heartbeat.joinable()) {
-            heartbeat.join();
-        }
-        throw;
-    }
 
-    WinHttpWebSocketClose(socket.value, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
-    running->store(false);
-    if (heartbeat.joinable()) {
-        heartbeat.join();
+        if (running->load()) {
+            on_log(L"全部弹幕服务器都已断开，5 秒后重连。");
+            sleep_until_retry(running);
+        }
     }
 }
 
