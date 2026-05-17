@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="PitlaneDanmaku.Lite.WinUI.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Pitlane Danmaku Lite">
+
+    <Grid Background="{StaticResource PitlaneSurfaceBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{StaticResource PitlanePanelBrush}" BorderBrush="{StaticResource PitlaneBorderBrush}" BorderThickness="0,0,0,1">
+            <Grid MaxWidth="1180" Padding="24,18" HorizontalAlignment="Stretch">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="Pitlane Danmaku Lite" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource PitlaneInkBrush}" />
+                    <TextBlock Text="WinUI/C++ 控制台外壳" Style="{StaticResource SubtleText}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                    <ProgressRing x:Name="LiveRing" Width="22" Height="22" IsActive="False" />
+                    <TextBlock x:Name="LiveStateText" Text="待连接" FontSize="14" Foreground="{StaticResource PitlaneMutedInkBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+            <Grid MaxWidth="1180" Padding="24" RowSpacing="18" ColumnSpacing="18">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="420" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource ToolPanel}">
+                    <StackPanel Spacing="16">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="直播连接" Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="输入直播间号或链接，Cookie 可以直接粘贴请求头。" Style="{StaticResource SubtleText}" />
+                        </StackPanel>
+
+                        <TextBox x:Name="RoomInput" Header="直播间" PlaceholderText="例如 22625025 或直播间链接" />
+
+                        <TextBox
+                            x:Name="CookieInput"
+                            Header="Cookie"
+                            PlaceholderText="可以带 Cookie: 前缀，也可以粘贴整段请求头"
+                            AcceptsReturn="True"
+                            TextWrapping="Wrap"
+                            MinHeight="118" />
+
+                        <ToggleSwitch
+                            x:Name="OnlySuperChatSwitch"
+                            Header="显示过滤"
+                            OffContent="显示所有弹幕"
+                            OnContent="只显示 SuperChat / 醒目留言"
+                            Toggled="OnlySuperChatSwitch_Toggled" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button
+                                x:Name="ConnectButton"
+                                Content="连接直播间"
+                                Click="ConnectButton_Click"
+                                MinWidth="132"
+                                Style="{StaticResource AccentButtonStyle}" />
+                            <Button
+                                x:Name="SaveSettingsButton"
+                                Content="保存设置"
+                                Click="SaveSettingsButton_Click"
+                                MinWidth="104" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource ToolPanel}">
+                    <Grid RowSpacing="14">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="OBS 与叠加层" Style="{StaticResource SectionTitleText}" />
+                            <TextBlock Text="浏览器源默认走本机 HTTP/SSE 服务，透明叠加层后续继续由原生窗口负责。" Style="{StaticResource SubtleText}" />
+                        </StackPanel>
+
+                        <Grid Grid.Row="1" ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <NumberBox
+                                x:Name="ObsPortInput"
+                                Header="OBS 端口"
+                                Value="17333"
+                                Minimum="1024"
+                                Maximum="65535"
+                                SpinButtonPlacementMode="Inline" />
+
+                            <NumberBox
+                                x:Name="VisibleItemsInput"
+                                Grid.Column="1"
+                                Header="同屏数量"
+                                Value="5"
+                                Minimum="1"
+                                Maximum="20"
+                                SpinButtonPlacementMode="Inline" />
+
+                            <NumberBox
+                                x:Name="StageWidthInput"
+                                Grid.Column="2"
+                                Header="最大舞台宽度"
+                                Value="3840"
+                                Minimum="720"
+                                Maximum="7680"
+                                SpinButtonPlacementMode="Inline" />
+                        </Grid>
+
+                        <StackPanel Grid.Row="2" Spacing="12">
+                            <InfoBar
+                                x:Name="HealthInfo"
+                                IsOpen="True"
+                                Severity="Informational"
+                                Title="外壳预览"
+                                Message="当前 WinUI 外壳用于验证视觉和交互，下一步接入真实 lite 核心。" />
+
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Button
+                                    x:Name="RestartObsButton"
+                                    Content="重启 OBS 服务"
+                                    Click="RestartObsButton_Click"
+                                    MinWidth="128" />
+                                <Button
+                                    x:Name="AddTestCommentButton"
+                                    Content="测试弹幕"
+                                    Click="AddTestCommentButton_Click"
+                                    MinWidth="104" />
+                                <Button
+                                    x:Name="AddSuperChatButton"
+                                    Content="测试醒目留言"
+                                    Click="AddSuperChatButton_Click"
+                                    MinWidth="128" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Style="{StaticResource ToolPanel}">
+                    <Grid ColumnSpacing="18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.05*" />
+                            <ColumnDefinition Width="0.95*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Spacing="12">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="消息预览" Style="{StaticResource SectionTitleText}" />
+                                <TextBlock Text="接收链路接入后，这里会显示经过过滤和去重后的弹幕。" Style="{StaticResource SubtleText}" />
+                            </StackPanel>
+                            <ListView
+                                x:Name="PreviewList"
+                                MinHeight="220"
+                                MaxHeight="320"
+                                SelectionMode="None" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="12">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="运行日志" Style="{StaticResource SectionTitleText}" />
+                                <TextBlock Text="保留关键状态，方便定位 Cookie、连接和 OBS 服务问题。" Style="{StaticResource SubtleText}" />
+                            </StackPanel>
+                            <ListView
+                                x:Name="LogList"
+                                MinHeight="220"
+                                MaxHeight="320"
+                                SelectionMode="None" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </ScrollViewer>
+    </Grid>
+</Window>
