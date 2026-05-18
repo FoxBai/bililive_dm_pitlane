@@ -46,6 +46,7 @@ private:
         const AppSettings& settings);
     static std::wstring fetch_wbi_mixin_key(const AppSettings& settings);
     static std::wstring fetch_buvid3(const AppSettings& settings);
+    static std::vector<ChatMessage> fetch_recent_history(const AppSettings& settings, int room_id);
     static std::string http_get(const std::wstring& host, const std::wstring& path, const AppSettings& settings);
 };
 

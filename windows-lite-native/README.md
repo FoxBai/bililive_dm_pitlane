@@ -1,5 +1,24 @@
 # Pitlane Danmaku Lite
 
+## WinUI/C++ 外壳进度
+
+`windows-lite-native/winui-shell/` 是当前继续推进的 WinUI/C++ 控制台外壳。它已经接入 `windows-lite-native/src/` 里的真实 lite 核心，包括设置保存、消息队列、OBS 本地服务、B 站实时弹幕接收、zlib/brotli 解包、SuperChat 过滤和历史弹幕补偿。
+
+常用命令：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows-lite-native\winui-shell\verify-winui-lite.ps1
+powershell -ExecutionPolicy Bypass -File windows-lite-native\winui-shell\package-winui-lite.ps1 -Configuration Release -MakeZip
+```
+
+WinUI 便携包默认输出到：
+
+```text
+windows-lite-native\dist\PitlaneDanmakuLite-WinUI
+```
+
+Agent 接手时注意：`windows-lite-native/` 是 lite 方向的边界；不要碰 `hatch-runs/`，也不要提交 `build-vcpkg/`、`dist/`、`winui-shell/x64/`、`winui-shell/obj/` 等构建产物。
+
 `windows-lite-native` 是 Windows 叠加层应用的小体积重写方向。
 
 现有 WPF 版本使用自包含发布，分发很省心，但会把 .NET Desktop Runtime 一起打进安装包，所以体积偏大。Lite 方向的目标是把应用逻辑迁移到原生 C++，继续复用现有 Pitlane 素材和交互规则，尽量减少运行时依赖和安装包体积。

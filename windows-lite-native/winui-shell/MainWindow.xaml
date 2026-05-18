@@ -138,7 +138,7 @@
                                 IsOpen="True"
                                 Severity="Informational"
                                 Title="外壳预览"
-                                Message="当前 WinUI 外壳用于验证视觉和交互，下一步接入真实 lite 核心。" />
+                                Message="当前 WinUI 外壳已接入真实 lite 核心，可用于本地 OBS 预览和直播间连接验证。" />
 
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <Button

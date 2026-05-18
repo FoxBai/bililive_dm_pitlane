@@ -19,12 +19,15 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
     private:
         pitlane::lite::winui::LiteRuntime runtime_;
         bool connected_ = false;
+        bool ui_ready_ = false;
         int preview_index_ = 0;
 
         pitlane::lite::AppSettings CollectSettingsFromUi();
         void ApplySettingsToUi(const pitlane::lite::AppSettings& settings);
         void AppendLog(winrt::hstring const& message);
-        void AddPreviewMessage(const pitlane::lite::ChatMessage& message);
+        void AddPreviewMessage(const pitlane::lite::ChatMessage& message, bool append_log = true);
+        void StartLiveConnection(pitlane::lite::AppSettings settings);
+        void StopLiveConnection();
         void RestartObsService();
         void SetConnected(bool connected);
         void SetObsRunning(bool running);

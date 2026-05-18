@@ -56,15 +56,18 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
 
     MainWindow::MainWindow()
     {
+        InitializeComponent();
         Title(L"Pitlane Danmaku Lite");
         ApplySettingsToUi(runtime_.settings());
+        ui_ready_ = true;
         AppendLog(L"WinUI/C++ 外壳已启动。");
         AppendLog(hstring{ L"配置文件：" } + to_hstring(runtime_.settings_path()));
     }
 
     void MainWindow::ConnectButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
-        runtime_.update_settings(CollectSettingsFromUi());
+        auto settings = CollectSettingsFromUi();
+        runtime_.update_settings(settings);
         if (!connected_ && RoomInput().Text().empty())
         {
             HealthInfo().Severity(InfoBarSeverity::Warning);
@@ -75,7 +78,11 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
             return;
         }
 
-        SetConnected(!connected_);
+        if (connected_) {
+            StopLiveConnection();
+        } else {
+            StartLiveConnection(std::move(settings));
+        }
     }
 
     void MainWindow::SaveSettingsButton_Click(IInspectable const&, RoutedEventArgs const&)
@@ -120,13 +127,19 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
 
     void MainWindow::OnlySuperChatSwitch_Toggled(IInspectable const&, RoutedEventArgs const&)
     {
+        if (!ui_ready_) {
+            return;
+        }
+
+        runtime_.update_settings(CollectSettingsFromUi());
+
         if (OnlySuperChatSwitch().IsOn())
         {
-            AppendLog(L"已开启只显示 SuperChat / 醒目留言。");
+            AppendLog(L"已开启只显示 SuperChat / 醒目留言，过滤设置已即时生效。");
         }
         else
         {
-            AppendLog(L"已关闭只显示 SuperChat / 醒目留言。");
+            AppendLog(L"已关闭只显示 SuperChat / 醒目留言，过滤设置已即时生效。");
         }
     }
 
@@ -164,8 +177,9 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
         LogList().ScrollIntoView(item);
     }
 
-    void MainWindow::AddPreviewMessage(const pitlane::lite::ChatMessage& message)
+    void MainWindow::AddPreviewMessage(const pitlane::lite::ChatMessage& message, bool append_log)
     {
+        constexpr uint32_t max_preview_items = 120;
         preview_index_ += 1;
         const bool super_chat = message.is_super_chat();
 
@@ -188,9 +202,47 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
         row.Children().Append(title);
         row.Children().Append(body);
         PreviewList().Items().Append(row);
+        while (PreviewList().Items().Size() > max_preview_items) {
+            PreviewList().Items().RemoveAt(0);
+        }
         PreviewList().ScrollIntoView(row);
 
-        AppendLog(hstring{ super_chat ? L"添加醒目留言预览 #" : L"添加普通弹幕预览 #" } + winrt::to_hstring(preview_index_));
+        if (append_log) {
+            AppendLog(hstring{ super_chat ? L"添加醒目留言预览 #" : L"添加普通弹幕预览 #" } + winrt::to_hstring(preview_index_));
+        }
+    }
+
+    void MainWindow::StartLiveConnection(pitlane::lite::AppSettings settings)
+    {
+        runtime_.start_live(
+            std::move(settings),
+            [this](std::wstring message) {
+                DispatcherQueue().TryEnqueue([this, message = std::move(message)]() {
+                    AppendLog(to_hstring(message));
+                });
+            },
+            [this](pitlane::lite::ChatMessage message) {
+                DispatcherQueue().TryEnqueue([this, message = std::move(message)]() {
+                    AddPreviewMessage(message, false);
+                });
+            },
+            [this]() {
+                DispatcherQueue().TryEnqueue([this]() {
+                    if (connected_) {
+                        SetConnected(false);
+                        AppendLog(L"直播间接收已结束。");
+                    }
+                });
+            });
+
+        SetConnected(true);
+    }
+
+    void MainWindow::StopLiveConnection()
+    {
+        runtime_.stop_live();
+        SetConnected(false);
+        AppendLog(L"已请求断开直播间。");
     }
 
     void MainWindow::RestartObsService()
@@ -227,7 +279,7 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
         LiveStateText().Text(connected ? L"接收中" : L"待连接");
         HealthInfo().Severity(connected ? InfoBarSeverity::Success : InfoBarSeverity::Informational);
         HealthInfo().Title(connected ? L"直播间已连接" : L"直播间已断开");
-        HealthInfo().Message(connected ? L"外壳状态已进入接收模式，下一步接入 BilibiliClient。"
+        HealthInfo().Message(connected ? L"正在使用 BilibiliClient 接收真实直播间弹幕。"
                                        : L"已停止接收，OBS 预览和本地服务设置保留。");
         HealthInfo().IsOpen(true);
         AppendLog(connected ? hstring{ L"连接直播间：" } + RoomInput().Text() : hstring{ L"已断开直播间。" });

@@ -363,6 +363,7 @@ std::string LocalObsServer::build_overlay_html() const {
       transform-origin: left bottom;
       will-change: transform, opacity;
       opacity: 1;
+      transition: opacity .28s ease;
     }
     .frame {
       position: absolute;
@@ -370,6 +371,7 @@ std::string LocalObsServer::build_overlay_html() const {
       width: 1280px;
       height: 900px;
       object-fit: contain;
+      filter: drop-shadow(0 12px 18px rgba(0,0,0,.2));
     }
     .car {
       position: absolute;
@@ -421,11 +423,23 @@ std::string LocalObsServer::build_overlay_html() const {
       font-weight: 900;
       text-shadow: none;
     }
+    .nameText {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .superchat .badge {
       display: inline-block;
     }
     .superchat .name {
       max-width: 500px;
+    }
+    .superchat .message {
+      color: #fff7d6;
+      text-shadow: 0 3px 8px rgba(0,0,0,.58), 0 0 12px rgba(253,230,138,.22);
+    }
+    .superchat .car {
+      filter: drop-shadow(0 10px 10px rgba(0,0,0,.24)) drop-shadow(0 0 16px rgba(253,230,138,.25));
     }
   </style>
 </head>
@@ -447,6 +461,7 @@ std::string LocalObsServer::build_overlay_html() const {
       { id: "car_10", url: "/assets/cars/car_10.png", width: 595, height: 207 }
     ];
     const items = [];
+    const queue = [];
     const baseWidth = 1280;
     const baseHeight = 900;
     const baseGap = 36;
@@ -457,6 +472,12 @@ std::string LocalObsServer::build_overlay_html() const {
          << settings_.max_stage_width
          << R"html(;
     const carBottom = 48;
+    let lastInsertAt = 0;
+
+    [framePath, ...cars.map(car => car.url)].forEach(url => {
+      const image = new Image();
+      image.src = url;
+    });
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
@@ -498,18 +519,30 @@ std::string LocalObsServer::build_overlay_html() const {
       const carTop = baseHeight - car.height - carBottom;
       const node = document.createElement("div");
       node.className = `item ${message.kind === "superchat" ? "superchat" : "comment"}`;
+      const badgeText = message.kind === "superchat" && message.price ? `SC ¥${message.price}` : "SC";
       node.innerHTML = `
         <img class="frame" src="${framePath}" alt="">
         <img class="car" src="${car.url}" alt="" style="top:${carTop}px;width:${car.width}px;height:${car.height}px">
         <div class="text">
-          <div class="name"><span class="badge">SC</span><span>${escapeHtml(message.userName)}</span></div>
+          <div class="name"><span class="badge">${escapeHtml(badgeText)}</span><span class="nameText">${escapeHtml(message.userName)}</span></div>
           <div class="message">${escapeHtml(message.text)}</div>
         </div>`;
       stage.appendChild(node);
       items.unshift({ node, x: -baseWidth, target: 0, scale: scaleForStage(), leaving: false });
       layout();
     }
-    function tick() {
+    function enqueueMessage(message) {
+      queue.push(message);
+      while (queue.length > 80) queue.shift();
+    }
+    function tick(now) {
+      const interval = Math.max(180, Math.min(420, )html"
+         << settings_.launch_interval_ms
+         << R"html());
+      if (queue.length > 0 && now - lastInsertAt >= interval) {
+        addMessage(queue.shift());
+        lastInsertAt = now;
+      }
       for (let index = items.length - 1; index >= 0; index--) {
         const item = items[index];
         const pressure = Math.min(1, items.length / Math.max(1, minVisible + 3));
@@ -525,7 +558,8 @@ std::string LocalObsServer::build_overlay_html() const {
       requestAnimationFrame(tick);
     }
     addEventListener("resize", layout);
-    new EventSource("/events").onmessage = event => addMessage(JSON.parse(event.data));
+    const events = new EventSource("/events");
+    events.onmessage = event => enqueueMessage(JSON.parse(event.data));
     requestAnimationFrame(tick);
   </script>
 </body>

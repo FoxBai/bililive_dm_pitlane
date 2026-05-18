@@ -20,16 +20,21 @@
 #include <charconv>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <cwctype>
 #include <ctime>
+#include <deque>
 #include <iomanip>
+#include <mutex>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <optional>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace pitlane::lite {
 
@@ -502,34 +507,514 @@ std::string decompress_brotli(const std::string& payload) {
 #endif
 }
 
+bool is_json_ws(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+void skip_json_ws(std::string_view text, std::size_t& offset) {
+    while (offset < text.size() && is_json_ws(text[offset])) {
+        ++offset;
+    }
+}
+
+std::string_view trim_json(std::string_view text) {
+    while (!text.empty() && is_json_ws(text.front())) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && is_json_ws(text.back())) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
+std::optional<int> hex_digit(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> read_json_hex4(std::string_view value, std::size_t offset) {
+    if (offset + 4 > value.size()) {
+        return std::nullopt;
+    }
+
+    std::uint32_t codepoint = 0;
+    for (std::size_t index = 0; index < 4; ++index) {
+        const auto digit = hex_digit(value[offset + index]);
+        if (!digit.has_value()) {
+            return std::nullopt;
+        }
+        codepoint = (codepoint << 4) | static_cast<std::uint32_t>(*digit);
+    }
+    return codepoint;
+}
+
+void append_utf8(std::string& output, std::uint32_t codepoint) {
+    if (codepoint <= 0x7f) {
+        output.push_back(static_cast<char>(codepoint));
+    } else if (codepoint <= 0x7ff) {
+        output.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+        output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    } else if (codepoint <= 0xffff) {
+        output.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+        output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+        output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    } else if (codepoint <= 0x10ffff) {
+        output.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+        output.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+        output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+        output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    }
+}
+
+std::optional<std::string> decode_json_string(std::string_view value) {
+    value = trim_json(value);
+    if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
+        return std::nullopt;
+    }
+
+    std::string output;
+    output.reserve(value.size());
+    for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+        const char ch = value[index];
+        if (ch != '\\') {
+            output.push_back(ch);
+            continue;
+        }
+
+        if (++index + 1 > value.size()) {
+            return std::nullopt;
+        }
+
+        switch (value[index]) {
+        case '"': output.push_back('"'); break;
+        case '\\': output.push_back('\\'); break;
+        case '/': output.push_back('/'); break;
+        case 'b': output.push_back('\b'); break;
+        case 'f': output.push_back('\f'); break;
+        case 'n': output.push_back('\n'); break;
+        case 'r': output.push_back('\r'); break;
+        case 't': output.push_back('\t'); break;
+        case 'u': {
+            const auto first = read_json_hex4(value, index + 1);
+            if (!first.has_value()) {
+                return std::nullopt;
+            }
+            index += 4;
+
+            std::uint32_t codepoint = *first;
+            if (codepoint >= 0xd800 && codepoint <= 0xdbff &&
+                index + 6 < value.size() &&
+                value[index + 1] == '\\' &&
+                value[index + 2] == 'u') {
+                const auto second = read_json_hex4(value, index + 3);
+                if (second.has_value() && *second >= 0xdc00 && *second <= 0xdfff) {
+                    codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (*second - 0xdc00);
+                    index += 6;
+                }
+            }
+            append_utf8(output, codepoint);
+            break;
+        }
+        default:
+            output.push_back(value[index]);
+            break;
+        }
+    }
+    return output;
+}
+
+std::optional<std::string_view> json_value_span(std::string_view text, std::size_t offset) {
+    skip_json_ws(text, offset);
+    if (offset >= text.size()) {
+        return std::nullopt;
+    }
+
+    const char first = text[offset];
+    if (first == '"') {
+        bool escaped = false;
+        for (std::size_t index = offset + 1; index < text.size(); ++index) {
+            const char ch = text[index];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                return text.substr(offset, index - offset + 1);
+            }
+        }
+        return std::nullopt;
+    }
+
+    if (first == '{' || first == '[') {
+        std::vector<char> closers;
+        closers.push_back(first == '{' ? '}' : ']');
+        bool in_string = false;
+        bool escaped = false;
+        for (std::size_t index = offset + 1; index < text.size(); ++index) {
+            const char ch = text[index];
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (ch == '\\') {
+                    escaped = true;
+                } else if (ch == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            if (ch == '"') {
+                in_string = true;
+            } else if (ch == '{') {
+                closers.push_back('}');
+            } else if (ch == '[') {
+                closers.push_back(']');
+            } else if (!closers.empty() && ch == closers.back()) {
+                closers.pop_back();
+                if (closers.empty()) {
+                    return text.substr(offset, index - offset + 1);
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::size_t end = offset;
+    while (end < text.size() &&
+           text[end] != ',' &&
+           text[end] != '}' &&
+           text[end] != ']' &&
+           !is_json_ws(text[end])) {
+        ++end;
+    }
+    return text.substr(offset, end - offset);
+}
+
+std::vector<std::string_view> root_json_objects(std::string_view json) {
+    std::vector<std::string_view> objects;
+    std::size_t offset = 0;
+    while (offset < json.size()) {
+        const auto begin = json.find('{', offset);
+        if (begin == std::string_view::npos) {
+            break;
+        }
+
+        const auto object = json_value_span(json, begin);
+        if (!object.has_value() || trim_json(*object).empty() || trim_json(*object).front() != '{') {
+            offset = begin + 1;
+            continue;
+        }
+
+        objects.push_back(*object);
+        offset = static_cast<std::size_t>(object->data() - json.data()) + object->size();
+    }
+    return objects;
+}
+
+std::optional<std::string_view> find_json_property(std::string_view object, std::string_view name) {
+    object = trim_json(object);
+    if (object.size() < 2 || object.front() != '{') {
+        return std::nullopt;
+    }
+
+    std::size_t offset = 1;
+    while (offset < object.size()) {
+        skip_json_ws(object, offset);
+        if (offset >= object.size() || object[offset] == '}') {
+            break;
+        }
+
+        const auto key_span = json_value_span(object, offset);
+        if (!key_span.has_value()) {
+            return std::nullopt;
+        }
+        const auto key = decode_json_string(*key_span);
+        offset = static_cast<std::size_t>(key_span->data() - object.data()) + key_span->size();
+
+        skip_json_ws(object, offset);
+        if (offset >= object.size() || object[offset] != ':') {
+            return std::nullopt;
+        }
+        ++offset;
+
+        const auto value_span = json_value_span(object, offset);
+        if (!value_span.has_value()) {
+            return std::nullopt;
+        }
+        if (key.has_value() && *key == name) {
+            return value_span;
+        }
+
+        offset = static_cast<std::size_t>(value_span->data() - object.data()) + value_span->size();
+        skip_json_ws(object, offset);
+        if (offset < object.size() && object[offset] == ',') {
+            ++offset;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string_view> json_array_values(std::string_view array) {
+    std::vector<std::string_view> values;
+    array = trim_json(array);
+    if (array.size() < 2 || array.front() != '[') {
+        return values;
+    }
+
+    std::size_t offset = 1;
+    while (offset < array.size()) {
+        skip_json_ws(array, offset);
+        if (offset >= array.size() || array[offset] == ']') {
+            break;
+        }
+
+        const auto value_span = json_value_span(array, offset);
+        if (!value_span.has_value()) {
+            break;
+        }
+        values.push_back(*value_span);
+        offset = static_cast<std::size_t>(value_span->data() - array.data()) + value_span->size();
+        skip_json_ws(array, offset);
+        if (offset < array.size() && array[offset] == ',') {
+            ++offset;
+        }
+    }
+    return values;
+}
+
+std::string json_value_to_string(std::string_view value) {
+    value = trim_json(value);
+    if (value.empty()) {
+        return {};
+    }
+    if (value.front() == '"') {
+        return decode_json_string(value).value_or(std::string{});
+    }
+    return std::string(value);
+}
+
+std::string json_string_property(std::string_view object, std::string_view name) {
+    const auto value = find_json_property(object, name);
+    if (!value.has_value()) {
+        return {};
+    }
+    return json_value_to_string(*value);
+}
+
+std::optional<long long> json_int64_value(std::string_view value) {
+    const auto text = json_value_to_string(value);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+
+    long long number = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), number);
+    if (result.ec == std::errc{} && result.ptr == text.data() + text.size()) {
+        return number;
+    }
+    return std::nullopt;
+}
+
+std::optional<long long> json_int64_property(std::string_view object, std::string_view name) {
+    const auto value = find_json_property(object, name);
+    return value.has_value() ? json_int64_value(*value) : std::nullopt;
+}
+
+std::optional<double> json_double_value(std::string_view value) {
+    const auto text = json_value_to_string(value);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        std::size_t parsed = 0;
+        const double number = std::stod(text, &parsed);
+        if (parsed == text.size()) {
+            return number;
+        }
+    } catch (const std::exception&) {
+    }
+    return std::nullopt;
+}
+
+std::optional<double> json_double_property(std::string_view object, std::string_view name) {
+    const auto value = find_json_property(object, name);
+    return value.has_value() ? json_double_value(*value) : std::nullopt;
+}
+
+std::string stable_hash(std::string_view value) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (unsigned char ch : value) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= 1099511628211ull;
+    }
+
+    std::ostringstream output;
+    output << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return output.str();
+}
+
+std::string stable_message_key(std::string_view preferred, std::string_view fallback) {
+    const auto key = json_value_to_string(preferred);
+    if (!key.empty() && key != "0" && key != "null") {
+        return key;
+    }
+    return stable_hash(fallback);
+}
+
+std::optional<ChatMessage> parse_danmu_message(std::string_view object) {
+    const auto info = find_json_property(object, "info");
+    if (!info.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto info_values = json_array_values(*info);
+    if (info_values.size() < 3) {
+        return std::nullopt;
+    }
+
+    const auto user_values = json_array_values(info_values[2]);
+    if (user_values.size() < 2) {
+        return std::nullopt;
+    }
+
+    ChatMessage message;
+    message.kind = ChatMessageKind::Comment;
+    message.text = utf8_to_wide(json_value_to_string(info_values[1]));
+    message.user_id = json_int64_value(user_values[0]);
+    message.user_name = utf8_to_wide(json_value_to_string(user_values[1]));
+
+    std::string message_key;
+    const auto meta_values = json_array_values(info_values[0]);
+    if (meta_values.size() > 5) {
+        message_key = stable_message_key(meta_values[5], object);
+    } else if (meta_values.size() > 4) {
+        message_key = stable_message_key(meta_values[4], object);
+    } else {
+        message_key = stable_hash(object);
+    }
+    message.id = "live:" + message_key;
+
+    if (message.text.empty()) {
+        return std::nullopt;
+    }
+    return message;
+}
+
+std::optional<ChatMessage> parse_super_chat_message(std::string_view object) {
+    const auto data = find_json_property(object, "data");
+    const auto payload = data.has_value() ? *data : object;
+    const auto user_info = find_json_property(payload, "user_info");
+
+    ChatMessage message;
+    message.kind = ChatMessageKind::SuperChat;
+    message.text = utf8_to_wide(json_string_property(payload, "message"));
+    message.user_id = json_int64_property(payload, "uid");
+    message.price = json_double_property(payload, "price");
+    if (user_info.has_value()) {
+        message.user_name = utf8_to_wide(json_string_property(*user_info, "uname"));
+    }
+    if (message.user_name.empty()) {
+        message.user_name = utf8_to_wide(json_string_property(payload, "uname"));
+    }
+
+    const auto id_value = find_json_property(payload, "id");
+    message.id = "sc:" + (id_value.has_value() ? stable_message_key(*id_value, object) : stable_hash(object));
+    if (message.text.empty()) {
+        return std::nullopt;
+    }
+    return message;
+}
+
+std::optional<ChatMessage> parse_history_message(std::string_view object) {
+    const auto text = json_string_property(object, "text");
+    if (text.empty()) {
+        return std::nullopt;
+    }
+
+    ChatMessage message;
+    message.kind = ChatMessageKind::Comment;
+    message.text = utf8_to_wide(text);
+    message.user_name = utf8_to_wide(json_string_property(object, "nickname"));
+    if (message.user_name.empty()) {
+        message.user_name = utf8_to_wide(json_string_property(object, "uname"));
+    }
+    message.user_id = json_int64_property(object, "uid");
+
+    std::string id_source;
+    if (const auto check_info = find_json_property(object, "check_info"); check_info.has_value()) {
+        id_source = json_string_property(*check_info, "ct");
+        if (id_source.empty()) {
+            if (const auto ts = find_json_property(*check_info, "ts"); ts.has_value()) {
+                id_source = json_value_to_string(*ts);
+            }
+        }
+    }
+    if (id_source.empty()) {
+        id_source = json_string_property(object, "id");
+    }
+    if (id_source.empty()) {
+        const auto timeline = json_string_property(object, "timeline");
+        id_source = std::to_string(message.user_id.value_or(0)) + "|" + timeline + "|" + text;
+    }
+    message.id = "history:" + stable_hash(id_source);
+
+    return message;
+}
+
 std::vector<ChatMessage> parse_json_messages(const std::string& json) {
     std::vector<ChatMessage> messages;
+    for (const auto object : root_json_objects(json)) {
+        const auto command = json_string_property(object, "cmd");
+        std::optional<ChatMessage> message;
+        if (command.rfind("DANMU_MSG", 0) == 0) {
+            message = parse_danmu_message(object);
+        } else if (command.rfind("SUPER_CHAT_MESSAGE", 0) == 0) {
+            message = parse_super_chat_message(object);
+        }
 
-    const std::regex danmu_pattern(
-        R"json("cmd"\s*:\s*"DANMU_MSG[^"]*"[\s\S]*?"info"\s*:\s*\[\s*\[[\s\S]*?\]\s*,\s*"([^"]*)"[\s\S]*?\[\s*(\d+)\s*,\s*"([^"]*)")json");
-    for (std::sregex_iterator it(json.begin(), json.end(), danmu_pattern), end; it != end; ++it) {
-        ChatMessage message;
-        message.id = "live:" + std::to_string(std::hash<std::string>{}((*it).str()));
-        message.text = utf8_to_wide((*it)[1].str());
-        message.user_id = std::stoll((*it)[2].str());
-        message.user_name = utf8_to_wide((*it)[3].str());
-        message.kind = ChatMessageKind::Comment;
-        messages.push_back(std::move(message));
+        if (message.has_value()) {
+            messages.push_back(std::move(*message));
+        }
+    }
+    return messages;
+}
+
+std::vector<ChatMessage> parse_history_messages(const std::string& json) {
+    std::vector<ChatMessage> messages;
+    const auto objects = root_json_objects(json);
+    if (objects.empty()) {
+        return messages;
     }
 
-    const std::regex super_chat_pattern(
-        R"json("cmd"\s*:\s*"SUPER_CHAT_MESSAGE[^"]*"[\s\S]*?"message"\s*:\s*"([^"]*)"[\s\S]*?"uid"\s*:\s*(\d+)[\s\S]*?"price"\s*:\s*(\d+(?:\.\d+)?)[\s\S]*?"uname"\s*:\s*"([^"]*)")json");
-    for (std::sregex_iterator it(json.begin(), json.end(), super_chat_pattern), end; it != end; ++it) {
-        ChatMessage message;
-        message.id = "sc:" + std::to_string(std::hash<std::string>{}((*it).str()));
-        message.text = utf8_to_wide((*it)[1].str());
-        message.user_id = std::stoll((*it)[2].str());
-        message.price = std::stod((*it)[3].str());
-        message.user_name = utf8_to_wide((*it)[4].str());
-        message.kind = ChatMessageKind::SuperChat;
-        messages.push_back(std::move(message));
+    const auto data = find_json_property(objects.front(), "data");
+    if (!data.has_value()) {
+        return messages;
     }
 
+    for (const auto array_name : {"admin", "room"}) {
+        const auto array = find_json_property(*data, array_name);
+        if (!array.has_value()) {
+            continue;
+        }
+        for (const auto item : json_array_values(*array)) {
+            if (const auto message = parse_history_message(item); message.has_value()) {
+                messages.push_back(std::move(*message));
+            }
+        }
+    }
     return messages;
 }
 
@@ -615,13 +1100,11 @@ void sleep_until_retry(const std::shared_ptr<std::atomic_bool>& running) {
     }
 }
 
-void publish_with_name_cache(
-    ChatMessage message,
-    const BilibiliClient::MessageCallback& on_message,
+bool resolve_name_from_cache(
+    ChatMessage& message,
     const BilibiliClient::LogCallback& on_log,
     std::unordered_map<long long, std::wstring>& user_name_cache,
-    bool& masked_name_warned,
-    long long& received_count) {
+    bool& masked_name_warned) {
     if (message.user_id.has_value() && *message.user_id > 0) {
         if (looks_masked_name(message.user_name)) {
             const auto cached = user_name_cache.find(*message.user_id);
@@ -632,11 +1115,25 @@ void publish_with_name_cache(
                     masked_name_warned = true;
                     on_log(L"收到 B站返回的脱敏昵称，已跳过无法恢复的弹幕；如仍频繁出现，请填写登录后的网页 Cookie。");
                 }
-                return;
+                return false;
             }
         } else if (!message.user_name.empty() && !contains_masked_name(message.user_name)) {
             user_name_cache[*message.user_id] = message.user_name;
         }
+    }
+
+    return true;
+}
+
+bool publish_with_name_cache(
+    ChatMessage message,
+    const BilibiliClient::MessageCallback& on_message,
+    const BilibiliClient::LogCallback& on_log,
+    std::unordered_map<long long, std::wstring>& user_name_cache,
+    bool& masked_name_warned,
+    long long& received_count) {
+    if (!resolve_name_from_cache(message, on_log, user_name_cache, masked_name_warned)) {
+        return false;
     }
 
     ++received_count;
@@ -644,6 +1141,7 @@ void publish_with_name_cache(
         on_log(L"已接收 B站实时弹幕 " + std::to_wstring(received_count) + L" 条。");
     }
     on_message(std::move(message));
+    return true;
 }
 
 SocketHandle connect_tcp_socket(const DanmakuHost& host) {
@@ -726,10 +1224,7 @@ void stream_tcp_endpoint(
     const DanmakuHost& host,
     const BilibiliClient::MessageCallback& on_message,
     const BilibiliClient::LogCallback& on_log,
-    const std::shared_ptr<std::atomic_bool>& running,
-    std::unordered_map<long long, std::wstring>& user_name_cache,
-    bool& masked_name_warned,
-    long long& received_count) {
+    const std::shared_ptr<std::atomic_bool>& running) {
     if (host.port <= 0) {
         throw std::runtime_error("TCP 弹幕服务器端口无效。");
     }
@@ -756,16 +1251,6 @@ void stream_tcp_endpoint(
         }
     });
 
-    auto cached_on_message = [&](ChatMessage message) {
-        publish_with_name_cache(
-            std::move(message),
-            on_message,
-            on_log,
-            user_name_cache,
-            masked_name_warned,
-            received_count);
-    };
-
     try {
         std::vector<char> header(16);
         while (running->load()) {
@@ -786,7 +1271,7 @@ void stream_tcp_endpoint(
                 break;
             }
 
-            process_packet(version, operation, payload, cached_on_message, on_log);
+            process_packet(version, operation, payload, on_message, on_log);
         }
     } catch (...) {
         socket_open.store(false);
@@ -811,17 +1296,14 @@ void stream_websocket_endpoint(
     bool secure,
     const BilibiliClient::MessageCallback& on_message,
     const BilibiliClient::LogCallback& on_log,
-    const std::shared_ptr<std::atomic_bool>& running,
-    std::unordered_map<long long, std::wstring>& user_name_cache,
-    bool& masked_name_warned,
-    long long& received_count) {
+    const std::shared_ptr<std::atomic_bool>& running) {
     const auto port = secure ? host.secure_websocket_port : host.websocket_port;
     if (port <= 0) {
         throw std::runtime_error("弹幕服务器端口无效。");
     }
 
     WinHttpHandle session(WinHttpOpen(
-        settings.user_agent.empty() ? L"PitlaneDanmakuLite/0.1" : settings.user_agent.c_str(),
+        settings.user_agent.empty() ? L"PitlaneDanmakuLite/0.1.1" : settings.user_agent.c_str(),
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -907,16 +1389,6 @@ void stream_websocket_endpoint(
         }
     });
 
-    auto cached_on_message = [&](ChatMessage message) {
-        publish_with_name_cache(
-            std::move(message),
-            on_message,
-            on_log,
-            user_name_cache,
-            masked_name_warned,
-            received_count);
-    };
-
     std::string message_buffer;
     std::vector<char> buffer(64 * 1024);
     try {
@@ -944,7 +1416,7 @@ void stream_websocket_endpoint(
             message_buffer.append(buffer.data(), buffer.data() + bytes_read);
             if (buffer_type == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE ||
                 buffer_type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) {
-                process_packet_payload(message_buffer, cached_on_message, on_log);
+                process_packet_payload(message_buffer, on_message, on_log);
                 message_buffer.clear();
             }
         }
@@ -1032,7 +1504,82 @@ void BilibiliClient::stream_messages(
     std::unordered_map<long long, std::wstring> user_name_cache;
     bool masked_name_warned = false;
     long long received_count = 0;
+    std::mutex cache_mutex;
+    std::unordered_set<std::string> history_seen_ids;
+    std::deque<std::string> history_seen_order;
+    auto last_realtime_message_at = std::chrono::steady_clock::time_point{};
+    auto publish_realtime = [&](ChatMessage message) {
+        std::lock_guard lock(cache_mutex);
+        if (publish_with_name_cache(
+                std::move(message),
+                on_message,
+                on_log,
+                user_name_cache,
+                masked_name_warned,
+                received_count)) {
+            last_realtime_message_at = std::chrono::steady_clock::now();
+        }
+    };
     on_log(L"B站真实房间号：" + std::to_wstring(info.resolved_room_id) + L"，可用弹幕服务器：" + std::to_wstring(info.hosts.size()) + L" 个。");
+
+    std::thread history_thread([&, room_id = info.resolved_room_id]() {
+        bool seeded = false;
+        bool warned = false;
+        while (running->load()) {
+            try {
+                auto history_messages = fetch_recent_history(effective_settings, room_id);
+                std::vector<ChatMessage> fresh_messages;
+                bool realtime_quiet = false;
+                int displayed_count = 0;
+                {
+                    std::lock_guard lock(cache_mutex);
+                    for (auto it = history_messages.rbegin(); it != history_messages.rend(); ++it) {
+                        ChatMessage message = *it;
+                        if (!history_seen_ids.insert(message.id).second) {
+                            continue;
+                        }
+                        history_seen_order.push_back(message.id);
+                        if (resolve_name_from_cache(message, on_log, user_name_cache, masked_name_warned)) {
+                            fresh_messages.push_back(std::move(message));
+                        }
+                    }
+
+                    while (history_seen_order.size() > 500) {
+                        history_seen_ids.erase(history_seen_order.front());
+                        history_seen_order.pop_front();
+                    }
+
+                    realtime_quiet = last_realtime_message_at == std::chrono::steady_clock::time_point{} ||
+                        std::chrono::steady_clock::now() - last_realtime_message_at > std::chrono::seconds(6);
+                    if (seeded && realtime_quiet) {
+                        for (auto& message : fresh_messages) {
+                            on_message(std::move(message));
+                            ++displayed_count;
+                        }
+                    }
+                }
+
+                if (!seeded) {
+                    seeded = true;
+                    on_log(L"历史弹幕补偿轮询已启动。");
+                } else if (realtime_quiet && displayed_count > 0) {
+                    if (displayed_count > 0) {
+                        on_log(L"历史弹幕补偿显示 " + std::to_wstring(displayed_count) + L" 条。");
+                    }
+                }
+                warned = false;
+            } catch (const std::exception& ex) {
+                if (!warned) {
+                    warned = true;
+                    on_log(L"历史弹幕补偿轮询失败：" + utf8_to_wide(ex.what()));
+                }
+            }
+
+            for (int i = 0; i < 30 && running->load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+    });
 
     while (running->load()) {
         for (const auto& host : info.hosts) {
@@ -1055,12 +1602,9 @@ void BilibiliClient::stream_messages(
                         info,
                         host,
                         secure,
-                        on_message,
+                        publish_realtime,
                         on_log,
-                        running,
-                        user_name_cache,
-                        masked_name_warned,
-                        received_count);
+                        running);
                     connected = true;
                     break;
                 } catch (const std::exception& ex) {
@@ -1080,12 +1624,9 @@ void BilibiliClient::stream_messages(
                         effective_settings,
                         info,
                         host,
-                        on_message,
+                        publish_realtime,
                         on_log,
-                        running,
-                        user_name_cache,
-                        masked_name_warned,
-                        received_count);
+                        running);
                     connected = true;
                 } catch (const std::exception& ex) {
                     const std::string error_message = ex.what();
@@ -1107,6 +1648,10 @@ void BilibiliClient::stream_messages(
             on_log(L"全部弹幕服务器都已断开，5 秒后重连。");
             sleep_until_retry(running);
         }
+    }
+
+    if (history_thread.joinable()) {
+        history_thread.join();
     }
 }
 
@@ -1204,9 +1749,18 @@ std::wstring BilibiliClient::fetch_buvid3(const AppSettings& settings) {
     return parse_string_field(body, "b_3");
 }
 
+std::vector<ChatMessage> BilibiliClient::fetch_recent_history(const AppSettings& settings, int room_id) {
+    const auto body = http_get(
+        L"api.live.bilibili.com",
+        L"/xlive/web-room/v1/dM/gethistory?roomid=" + std::to_wstring(room_id) + L"&room_type=0",
+        settings);
+    throw_if_bilibili_failed(body, L"历史弹幕");
+    return parse_history_messages(body);
+}
+
 std::string BilibiliClient::http_get(const std::wstring& host, const std::wstring& path, const AppSettings& settings) {
     WinHttpHandle session(WinHttpOpen(
-        settings.user_agent.empty() ? L"PitlaneDanmakuLite/0.1" : settings.user_agent.c_str(),
+        settings.user_agent.empty() ? L"PitlaneDanmakuLite/0.1.1" : settings.user_agent.c_str(),
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -1214,6 +1768,7 @@ std::string BilibiliClient::http_get(const std::wstring& host, const std::wstrin
     if (!session) {
         throw std::runtime_error("WinHTTP 初始化失败。");
     }
+    WinHttpSetTimeouts(session.value, 5000, 5000, 5000, 5000);
 
     WinHttpHandle connection(WinHttpConnect(session.value, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0));
     if (!connection) {

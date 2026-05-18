@@ -69,7 +69,7 @@ Set-Content -LiteralPath $UninstallScript -Value $UninstallContent -Encoding UTF
 
 New-Item -Path $UninstallKey -Force | Out-Null
 New-ItemProperty -Path $UninstallKey -Name "DisplayName" -Value $AppName -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $UninstallKey -Name "DisplayVersion" -Value "0.1.0-lite" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $UninstallKey -Name "DisplayVersion" -Value "0.1.1-lite" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $UninstallKey -Name "Publisher" -Value "FoxBai" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $UninstallKey -Name "InstallLocation" -Value $InstallDir -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $UninstallKey -Name "DisplayIcon" -Value $ExePath -PropertyType String -Force | Out-Null

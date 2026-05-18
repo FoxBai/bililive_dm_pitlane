@@ -19,6 +19,7 @@ namespace winrt::PitlaneDanmaku::Lite::WinUI::implementation
             }
         });
 #endif
+        InitializeComponent();
     }
 
     void App::OnLaunched([[maybe_unused]] LaunchActivatedEventArgs const& e)

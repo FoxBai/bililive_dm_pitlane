@@ -1,5 +1,5 @@
 #define AppName "Pitlane Danmaku Lite"
-#define AppVersion "0.1.0-lite"
+#define AppVersion "0.1.1-lite"
 #define AppPublisher "FoxBai"
 #define AppExeName "pitlane_lite.exe"
 

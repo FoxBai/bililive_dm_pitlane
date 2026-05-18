@@ -25,6 +25,7 @@
     <RuntimeIdentifiers>win10-x64</RuntimeIdentifiers>
     <WindowsPackageType>None</WindowsPackageType>
     <UseWinUI>true</UseWinUI>
+    <LiteVcpkgRoot Condition="'$(LiteVcpkgRoot)'==''">$(MSBuildProjectDirectory)\..\build-vcpkg\vcpkg_installed\x64-windows</LiteVcpkgRoot>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <ItemGroup Label="ProjectConfigurations">
@@ -65,23 +66,30 @@
       <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
       <WarningLevel>Level4</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\src;$(LiteVcpkgRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>PITLANE_LITE_HAS_COMPRESSION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalOptions>%(AdditionalOptions) /bigobj /utf-8</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>winhttp.lib;bcrypt.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(LiteVcpkgRoot)\debug\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>brotlidec.lib;brotlicommon.lib;zd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
+      <AdditionalLibraryDirectories>$(LiteVcpkgRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>brotlidec.lib;brotlicommon.lib;z.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
@@ -120,6 +128,9 @@
       <DependentUpon>MainWindow.xaml</DependentUpon>
     </ClCompile>
     <ClCompile Include="LiteRuntime.cpp" />
+    <ClCompile Include="..\src\BilibiliClient.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\src\LocalObsServer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -145,6 +156,19 @@
       <DeploymentContent>false</DeploymentContent>
     </Text>
   </ItemGroup>
+  <Target Name="CopyLiteCompressionRuntime" AfterTargets="Build">
+    <ItemGroup Condition="'$(Configuration)'=='Debug'">
+      <LiteCompressionDll Include="$(LiteVcpkgRoot)\debug\bin\brotlicommon.dll" />
+      <LiteCompressionDll Include="$(LiteVcpkgRoot)\debug\bin\brotlidec.dll" />
+      <LiteCompressionDll Include="$(LiteVcpkgRoot)\debug\bin\zd.dll" />
+    </ItemGroup>
+    <ItemGroup Condition="'$(Configuration)'!='Debug'">
+      <LiteCompressionDll Include="$(LiteVcpkgRoot)\bin\brotlicommon.dll" />
+      <LiteCompressionDll Include="$(LiteVcpkgRoot)\bin\brotlidec.dll" />
+      <LiteCompressionDll Include="$(LiteVcpkgRoot)\bin\z.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(LiteCompressionDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
