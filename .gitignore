@@ -170,3 +170,5 @@ windows-lite-native/dist/
 windows-lite-native/installer/output/
 windows-lite-native/winui-shell/Generated Files/
 windows-lite-native/winui-shell/PitlaneD.*/
+macos-native/.build/
+macos-native/.swiftpm/
