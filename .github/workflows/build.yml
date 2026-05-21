@@ -10,6 +10,35 @@ on:
     branches: [ "master" ]
 
 jobs:
+  macos-native:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate macOS scripts
+        run: bash -n scripts/build-app.sh scripts/smoke-app.sh scripts/package-dmg.sh
+        working-directory: macos-native
+
+      - name: Test macOS native app
+        run: swift test
+        working-directory: macos-native
+
+      - name: Build macOS app bundle
+        run: bash scripts/build-app.sh
+        working-directory: macos-native
+
+      - name: Package unsigned macOS DMG
+        run: SKIP_CODESIGN=1 bash scripts/package-dmg.sh
+        working-directory: macos-native
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PitlaneDanmaku-macOS-dmg
+          path: macos-native/dist/*.dmg
+
   build:
 
     runs-on: windows-2025-vs2026

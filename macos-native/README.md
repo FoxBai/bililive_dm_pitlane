@@ -31,6 +31,36 @@ open build/PitlaneDanmaku.app
 
 打包脚本会把仓库根目录的 `assets` 复制进 `PitlaneDanmaku.app/Contents/Resources/Assets`，因此分发 `.app` 时不依赖源码目录。
 
+## 冒烟验证
+
+```bash
+cd macos-native
+bash scripts/smoke-app.sh
+```
+
+脚本会重新打包 `.app`、启动应用、检查 `/health`、`/overlay`、`/cars/car_01.png`，并通过 CoreGraphics 确认主窗口在屏幕上。默认验证结束后会关闭测试进程；如果想保留窗口：
+
+```bash
+PITLANE_SMOKE_KEEP_RUNNING=1 bash scripts/smoke-app.sh
+```
+
+## 打包为 DMG
+
+```bash
+cd macos-native
+bash scripts/package-dmg.sh
+```
+
+默认会生成 `dist/PitlaneDanmaku-0.1.0-macOS.dmg`，并对 `.app` 做 ad-hoc codesign，适合本机验证和内部传递。
+
+如果要做正式分发，先在钥匙串中准备 Developer ID Application 证书和 notarytool keychain profile，然后运行：
+
+```bash
+CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="pitlane-notary" \
+bash scripts/package-dmg.sh
+```
+
 ## 图标
 
 ```bash

@@ -1,10 +1,11 @@
 # bililive_dm_pitlane
 
-`bililive_dm_pitlane` 是基于 [copyliu/bililive_dm](https://github.com/copyliu/bililive_dm) 创建的 Pitlane 分支，目标是把 B站直播评论包装成赛车 / pit lane 风格的透明叠加画面，并提供 Windows 原生应用。
+`bililive_dm_pitlane` 是基于 [copyliu/bililive_dm](https://github.com/copyliu/bililive_dm) 创建的 Pitlane 分支，目标是把 B站直播评论包装成赛车 / pit lane 风格的透明叠加画面，并提供 Windows 和 macOS 原生应用。
 
-当前仓库保留 `bililive_dm` 的历史代码和授权文件，在此基础上新增两个 Windows 方向：
+当前仓库保留 `bililive_dm` 的历史代码和授权文件，在此基础上新增这些原生方向：
 
 - `windows-native/PitlaneDanmaku.Windows`：当前可发布的 WPF / .NET 8 版本。
+- `macos-native/`：基于 Windows Native 业务语义迁移出的 Swift / AppKit 版本。
 - `windows-lite-native/`：小体积 C++ 原生重写方向，用于逐步减少 .NET Runtime 和自包含安装包体积。
 
 WPF 版本不沿用 Electron，也不直接复用 `FoxBai/pitlane_danmaku` 旧 Windows 实现；赛车和评论框素材来自 Pitlane 项目素材目录。
@@ -17,7 +18,7 @@ WPF 版本不沿用 Electron，也不直接复用 `FoxBai/pitlane_danmaku` 旧 W
 - 支持普通评论和 SuperChat / 醒目留言。
 - 评论清洗、重复消息去重、等待队列限流、醒目留言优先发车。
 - 本地 OBS 浏览器源：`http://127.0.0.1:17333/overlay`。
-- Windows 桌面透明置顶悬浮窗。
+- Windows 桌面透明置顶悬浮窗，macOS 原生版提供桌面透明悬浮窗。
 - 本地普通评论、醒目留言和连发测试按钮。
 - 随机赛车素材、横向接续队列、底部透明 overlay 展示。
 
@@ -60,6 +61,32 @@ http://127.0.0.1:17333/overlay
 
 浏览器源背景保持透明，适合叠加到直播画面上。
 
+## macOS 原生应用
+
+项目路径：
+
+```bash
+macos-native
+```
+
+本地运行：
+
+```bash
+cd macos-native
+swift run
+```
+
+打包和验证：
+
+```bash
+cd macos-native
+bash scripts/build-app.sh
+bash scripts/smoke-app.sh
+bash scripts/package-dmg.sh
+```
+
+macOS 版使用 Swift / AppKit，复用 Windows Native 的 B 站连接、消息管线、OBS 输出和赛车展示语义。发布脚本支持本机 ad-hoc codesign；配置 `CODE_SIGN_IDENTITY` 和 `NOTARY_PROFILE` 后可走 Developer ID 签名、公证和 stapler。
+
 ## Windows Lite Native 方向
 
 项目路径：
@@ -88,9 +115,9 @@ windows-lite-native
 
 - `assets/cars/`：赛车 PNG 和 `cars.json` 清单。
 - `assets/comment-box/`：评论框 PNG / SVG。
-- `assets/icon.svg`：项目图标素材。
+- `assets/icon.svg` / `icon.png` / `icon.icns` / `icon.ico`：项目图标素材，当前为黑底 F1 赛车 emoji。
 
-Windows 工程会在构建时把 `assets/` 复制到输出目录的 `Assets/` 下，OBS 本地服务和桌面悬浮窗共用同一份素材。
+Windows 和 macOS 工程会在构建时把 `assets/` 复制到输出目录，OBS 本地服务和桌面悬浮窗共用同一份素材。
 
 ## 结构
 
@@ -100,6 +127,11 @@ windows-native/PitlaneDanmaku.Windows/
   Services/               B站连接、消息管线、OBS 服务、素材加载
   OverlayWindow.xaml      桌面透明悬浮窗
   MainWindow.xaml         Windows 控制台界面
+
+macos-native/
+  Sources/PitlaneDanmakuMac/
+  Tests/PitlaneDanmakuMacTests/
+  scripts/
 ```
 
 关键文件：
