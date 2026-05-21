@@ -271,11 +271,15 @@ final class LocalObsServer {
               width: \(OverlayLayout.frameWidth)px;
               height: \(OverlayLayout.frameHeight)px;
               object-fit: contain;
+              transform: rotate(180deg) scaleY(-1);
+              transform-origin: center center;
             }
             .car {
               position: absolute;
               object-fit: contain;
               pointer-events: none;
+              transform: rotate(180deg) scaleY(-1);
+              transform-origin: center center;
             }
             .text {
               position: absolute;

@@ -127,19 +127,28 @@ private final class OverlayCanvasView: NSView {
             NSRect(x: item.x + x * scale, y: top + y * scale, width: width * scale, height: height * scale)
         }
 
-        frameImage?.draw(in: rect(0, 0, OverlayLayout.frameWidth, OverlayLayout.frameHeight), from: .zero, operation: .sourceOver, fraction: 1)
+        drawCorrectedImage(frameImage, in: rect(0, 0, OverlayLayout.frameWidth, OverlayLayout.frameHeight))
 
         let carTop = OverlayLayout.baseHeight - item.car.height - OverlayLayout.carBottom
-        item.carImage?.draw(
-            in: rect(OverlayLayout.carLeft, carTop, item.car.width, item.car.height),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: 1
-        )
+        drawCorrectedImage(item.carImage, in: rect(OverlayLayout.carLeft, carTop, item.car.width, item.car.height))
 
         let textX = item.x + OverlayLayout.textLeft * scale
         let textY = top + OverlayLayout.textTop * scale
         drawText(for: item.message, x: textX, y: textY, scale: scale)
+    }
+
+    private func drawCorrectedImage(_ image: NSImage?, in targetRect: NSRect) {
+        guard let image else { return }
+
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: targetRect.midX, yBy: targetRect.midY)
+        transform.rotate(byDegrees: 180)
+        transform.scaleX(by: 1, yBy: -1)
+        transform.translateX(by: -targetRect.midX, yBy: -targetRect.midY)
+        transform.concat()
+        image.draw(in: targetRect, from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawText(for message: ChatMessage, x: CGFloat, y: CGFloat, scale: CGFloat) {
