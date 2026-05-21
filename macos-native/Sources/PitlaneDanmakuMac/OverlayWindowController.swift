@@ -143,7 +143,6 @@ private final class OverlayCanvasView: NSView {
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
         transform.translateX(by: targetRect.midX, yBy: targetRect.midY)
-        transform.rotate(byDegrees: 180)
         transform.scaleX(by: 1, yBy: -1)
         transform.translateX(by: -targetRect.midX, yBy: -targetRect.midY)
         transform.concat()
