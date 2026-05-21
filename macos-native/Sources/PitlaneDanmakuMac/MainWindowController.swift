@@ -8,6 +8,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private lazy var obsServer = LocalObsServer(assets: assets, log: log)
     private var bilibiliClient: BilibiliWebRoomClient?
     private var overlayWindowController: OverlayWindowController?
+    private let controlColumnWidth: CGFloat = 420
 
     private let roomInputBox = NSTextField()
     private let cookieTextView = NSTextView()
@@ -26,6 +27,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let statusText = NSTextField(labelWithString: "未连接")
     private let assetText = NSTextField(labelWithString: "")
     private let logTextView = NSTextView()
+    private let controlScrollView = NSScrollView()
 
     init() {
         let window = NSWindow(
@@ -36,6 +38,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         )
         window.title = "Pitlane Danmaku Mac"
         window.minSize = NSSize(width: 1020, height: 680)
+        window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -47,6 +50,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         assetText.stringValue = "素材：\(assets.cars.count) 辆赛车，评论框 \(FileManager.default.fileExists(atPath: assets.commentFrameURL.path) ? "已加载" : "缺失")；字体 HarmonyOS Sans SC"
         obsURLBox.stringValue = obsServer.overlayURL
         restartObsServer()
+        resetInitialViewport()
     }
 
     @available(*, unavailable)
@@ -101,35 +105,62 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             splitView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -18)
         ])
 
-        let leftScroll = NSScrollView()
-        leftScroll.hasVerticalScroller = true
-        leftScroll.drawsBackground = false
-        let leftStack = verticalStack(spacing: 14)
-        leftStack.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 12)
-        leftScroll.documentView = leftStack
-        leftScroll.translatesAutoresizingMaskIntoConstraints = false
-        leftStack.translatesAutoresizingMaskIntoConstraints = false
-        leftStack.widthAnchor.constraint(equalToConstant: 420).isActive = true
-
         let headerTitle = NSTextField(labelWithString: "Pitlane Danmaku")
         headerTitle.font = .systemFont(ofSize: 30, weight: .bold)
         headerTitle.textColor = .pitlaneText
+        headerTitle.alignment = .center
         let headerSubtitle = NSTextField(labelWithString: "macOS 原生控制台")
         headerSubtitle.textColor = .pitlaneMuted
-        leftStack.addArrangedSubview(headerTitle)
-        leftStack.addArrangedSubview(headerSubtitle)
-        leftStack.addArrangedSubview(roomGroup())
-        leftStack.addArrangedSubview(displayGroup())
-        leftStack.addArrangedSubview(outputGroup())
+        headerSubtitle.alignment = .center
+
+        let leftColumn = verticalStack(spacing: 12)
+        leftColumn.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addArrangedSubview(headerTitle)
+        leftColumn.addArrangedSubview(headerSubtitle)
+
+        controlScrollView.hasVerticalScroller = true
+        controlScrollView.drawsBackground = false
+        controlScrollView.translatesAutoresizingMaskIntoConstraints = false
+        controlScrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        let leftStack = verticalStack(spacing: 14)
+        leftStack.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 12)
+        controlScrollView.documentView = leftStack
+        leftStack.translatesAutoresizingMaskIntoConstraints = false
+        leftStack.widthAnchor.constraint(equalToConstant: controlColumnWidth).isActive = true
+
+        leftColumn.addArrangedSubview(controlScrollView)
+        [roomGroup(), displayGroup(), outputGroup()].forEach { group in
+            group.translatesAutoresizingMaskIntoConstraints = false
+            group.widthAnchor.constraint(equalToConstant: controlColumnWidth - 12).isActive = true
+            leftStack.addArrangedSubview(group)
+        }
 
         let rightStack = verticalStack(spacing: 12)
         rightStack.translatesAutoresizingMaskIntoConstraints = false
         rightStack.addArrangedSubview(statusPanel())
         rightStack.addArrangedSubview(logPanel())
 
-        splitView.addArrangedSubview(leftScroll)
+        splitView.addArrangedSubview(leftColumn)
         splitView.addArrangedSubview(rightStack)
-        leftScroll.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        leftColumn.widthAnchor.constraint(equalToConstant: controlColumnWidth + 20).isActive = true
+    }
+
+    private func resetInitialViewport() {
+        DispatchQueue.main.async { [weak self] in
+            self?.scrollControlsToTop()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.scrollControlsToTop()
+        }
+    }
+
+    private func scrollControlsToTop() {
+        window?.makeFirstResponder(nil)
+        controlScrollView.layoutSubtreeIfNeeded()
+        controlScrollView.documentView?.scroll(NSPoint(x: 0, y: 0))
+        controlScrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        controlScrollView.reflectScrolledClipView(controlScrollView.contentView)
     }
 
     private func roomGroup() -> NSView {
@@ -420,15 +451,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func label(_ text: String) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.textColor = .pitlaneText
+        field.alignment = .left
         return field
     }
 
     private func configureTextField(_ field: NSTextField) -> NSTextField {
-        field.isBordered = true
-        field.isBezeled = true
+        field.isBordered = false
+        field.isBezeled = false
         field.drawsBackground = true
         field.backgroundColor = NSColor(hex: 0x101722)
         field.textColor = .pitlaneText
+        field.font = .systemFont(ofSize: 13)
+        field.focusRingType = .none
+        field.wantsLayer = true
+        field.layer?.cornerRadius = 6
+        field.layer?.backgroundColor = NSColor(hex: 0x101722).cgColor
+        field.layer?.borderColor = NSColor.pitlaneBorder.cgColor
+        field.layer?.borderWidth = 1
         field.translatesAutoresizingMaskIntoConstraints = false
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
         return field
@@ -437,7 +476,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func button(_ title: String, action: Selector, tint: NSColor = NSColor(hex: 0x7DD3FC)) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .rounded
-        button.contentTintColor = tint
+        button.font = .systemFont(ofSize: 13, weight: .semibold)
+        button.contentTintColor = .pitlaneText
+        button.bezelColor = tint.withAlphaComponent(0.22)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        button.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.pitlaneText,
+                .paragraphStyle: paragraph
+            ]
+        )
         return button
     }
 
@@ -445,8 +496,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         textView.font = .systemFont(ofSize: 13)
         textView.textColor = .pitlaneText
         textView.backgroundColor = NSColor(hex: 0x101722)
+        textView.insertionPointColor = .pitlaneText
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 6
+        scroll.layer?.backgroundColor = NSColor(hex: 0x101722).cgColor
+        scroll.layer?.borderColor = NSColor.pitlaneBorder.cgColor
+        scroll.layer?.borderWidth = 1
         scroll.documentView = textView
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.heightAnchor.constraint(equalToConstant: height).isActive = true

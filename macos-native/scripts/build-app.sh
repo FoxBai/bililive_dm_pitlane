@@ -16,6 +16,7 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp "$ROOT_DIR/.build/release/$BINARY_NAME" "$APP_DIR/Contents/MacOS/$BINARY_NAME"
 cp -R "$REPO_DIR/assets" "$APP_DIR/Contents/Resources/Assets"
+cp "$REPO_DIR/assets/icon.icns" "$APP_DIR/Contents/Resources/icon.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,6 +31,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <string>com.pitlane.danmaku.mac</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>icon</string>
   <key>CFBundleName</key>
   <string>Pitlane Danmaku</string>
   <key>CFBundlePackageType</key>

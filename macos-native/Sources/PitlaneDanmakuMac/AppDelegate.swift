@@ -1,6 +1,5 @@
 import AppKit
 
-@main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
 
@@ -8,8 +7,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         let controller = MainWindowController()
         mainWindowController = controller
-        controller.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        showMainWindow()
+        DispatchQueue.main.async { [weak self] in
+            self?.showMainWindow()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.showMainWindow()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -18,5 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         mainWindowController?.shutdown()
+    }
+
+    private func showMainWindow() {
+        mainWindowController?.showWindow(nil)
+        mainWindowController?.window?.makeKeyAndOrderFront(nil)
+        mainWindowController?.window?.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

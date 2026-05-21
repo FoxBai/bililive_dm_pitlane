@@ -128,15 +128,30 @@ final class LocalObsServer {
         switch path {
         case "/", "/overlay":
             writeText(buildOverlayHTML(), contentType: "text/html; charset=utf-8", to: connection)
+        case "/health":
+            writeHealth(to: connection)
         case "/events":
             handleEvents(connection)
         default:
             if path.lowercased().hasPrefix("/assets/") {
                 serveAsset(path, to: connection)
+            } else if path.lowercased().hasPrefix("/cars/") {
+                serveAsset("/assets" + path, to: connection)
             } else {
                 writeText("Not Found", contentType: "text/plain; charset=utf-8", to: connection, statusCode: 404, reason: "Not Found")
             }
         }
+    }
+
+    private func writeHealth(to connection: NWConnection) {
+        let payload: [String: Any] = [
+            "status": "ok",
+            "overlayUrl": overlayURL,
+            "cars": assets.cars.count,
+            "events": "/events"
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data("{}".utf8)
+        write(data, contentType: "application/json; charset=utf-8", to: connection)
     }
 
     private func handleEvents(_ connection: NWConnection) {

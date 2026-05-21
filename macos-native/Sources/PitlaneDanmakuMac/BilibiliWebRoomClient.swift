@@ -1,6 +1,7 @@
 import Compression
 import CryptoKit
 import Foundation
+import Network
 
 final class BilibiliWebRoomClient {
     private struct WbiKeys {
@@ -30,6 +31,7 @@ final class BilibiliWebRoomClient {
     private let stateQueue = DispatchQueue(label: "PitlaneDanmaku.BilibiliWebRoomClient.State")
     private var runTask: Task<Void, Never>?
     private var activeSocket: URLSessionWebSocketTask?
+    private var activeConnection: NWConnection?
     private var wbiKeys: WbiKeys?
     private var wbiKeysFetchedAt = Date.distantPast
     private var nameCache: [Int64: String] = [:]
@@ -39,7 +41,6 @@ final class BilibiliWebRoomClient {
     private var realtimeMessageCount = 0
     private var historyPollWarned = false
     private var maskedNameWarned = false
-    private var warnedBrotliUnsupported = false
 
     var onMessageReceived: ((ChatMessage) -> Void)?
 
@@ -68,6 +69,8 @@ final class BilibiliWebRoomClient {
         stateQueue.sync {
             activeSocket?.cancel(with: .goingAway, reason: nil)
             activeSocket = nil
+            activeConnection?.cancel()
+            activeConnection = nil
         }
     }
 
@@ -328,7 +331,22 @@ final class BilibiliWebRoomClient {
             }
         }
 
-        throw lastError ?? PitlaneError("没有可用 WebSocket 弹幕服务器。")
+        if host.port > 0 {
+            do {
+                try await connectAndReadTCP(settings: settings, roomId: roomId, token: token, host: host)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if let lastError {
+                    throw PitlaneError("\(lastError.localizedDescription); TCP fallback: \(error.localizedDescription)")
+                }
+
+                throw error
+            }
+        }
+
+        throw lastError ?? PitlaneError("没有可用弹幕服务器。")
     }
 
     private func connectAndReadWebSocket(settings: AppSettings, roomId: Int, token: String, host: DanmakuHost, useTLS: Bool) async throws {
@@ -383,6 +401,171 @@ final class BilibiliWebRoomClient {
         }
     }
 
+    private func connectAndReadTCP(settings: AppSettings, roomId: Int, token: String, host: DanmakuHost) async throws {
+        guard let port = NWEndpoint.Port(rawValue: UInt16(host.port)) else {
+            throw PitlaneError("TCP 弹幕服务器端口无效：\(host.port)")
+        }
+
+        let connection = NWConnection(host: NWEndpoint.Host(host.host), port: port, using: .tcp)
+        stateQueue.sync {
+            activeConnection = connection
+        }
+
+        defer {
+            connection.cancel()
+            stateQueue.sync {
+                if activeConnection === connection {
+                    activeConnection = nil
+                }
+            }
+        }
+
+        try await withTaskCancellationHandler {
+            try await Self.startTCPConnection(connection)
+            log.info("已连接 TCP 弹幕服务器 \(host.host):\(host.port)。")
+            try await Self.sendTCP(Self.buildAuthPacket(settings: settings, roomId: roomId, token: token), connection: connection)
+
+            let heartbeatTask = Task { [weak self, weak connection] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    guard !Task.isCancelled, let connection else { return }
+                    do {
+                        try await Self.sendTCP(Self.buildPacket(operation: 2, version: 1, payload: Data()), connection: connection)
+                    } catch {
+                        self?.log.warn("TCP 弹幕服务器心跳发送失败：\(error.localizedDescription)")
+                        return
+                    }
+                }
+            }
+            defer { heartbeatTask.cancel() }
+
+            var reader = TCPPacketReader(connection: connection)
+            while !Task.isCancelled {
+                let packet = try await reader.readPacket()
+                processPacket(version: packet.version, operation: packet.operation, payload: packet.payload)
+            }
+        } onCancel: {
+            connection.cancel()
+        }
+    }
+
+    private static func startTCPConnection(_ connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let resumeBox = TCPConnectionStartContinuation(continuation)
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    resumeBox.resume(.success(()))
+                case let .failed(error):
+                    resumeBox.resume(.failure(error))
+                case .cancelled:
+                    resumeBox.resume(.failure(CancellationError()))
+                default:
+                    break
+                }
+            }
+            connection.start(queue: .global(qos: .userInitiated))
+        }
+    }
+
+    private final class TCPConnectionStartContinuation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didResume = false
+        private let continuation: CheckedContinuation<Void, Error>
+
+        init(_ continuation: CheckedContinuation<Void, Error>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ result: Result<Void, Error>) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !didResume else { return }
+            didResume = true
+
+            switch result {
+            case .success:
+                continuation.resume()
+            case let .failure(error):
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    private static func sendTCP(_ data: Data, connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    private struct TCPPacket {
+        var version: Int
+        var operation: Int
+        var payload: Data
+    }
+
+    private struct TCPPacketReader {
+        let connection: NWConnection
+        var buffer = Data()
+
+        mutating func readPacket() async throws -> TCPPacket {
+            let header = try await readExact(16)
+            guard let packetLength = header.readInt32BE(at: 0),
+                  let headerLength = header.readInt16BE(at: 4),
+                  let version = header.readInt16BE(at: 6),
+                  let operation = header.readInt32BE(at: 8),
+                  packetLength >= headerLength,
+                  headerLength >= 16,
+                  packetLength <= 16 * 1024 * 1024 else {
+                throw PitlaneError("非法弹幕包头。")
+            }
+
+            if headerLength > 16 {
+                _ = try await readExact(headerLength - 16)
+            }
+
+            let payload = try await readExact(packetLength - headerLength)
+            return TCPPacket(version: version, operation: operation, payload: payload)
+        }
+
+        private mutating func readExact(_ length: Int) async throws -> Data {
+            while buffer.count < length {
+                let chunk = try await Self.receive(connection)
+                guard !chunk.isEmpty else {
+                    throw PitlaneError("TCP 弹幕服务器已关闭连接。")
+                }
+                buffer.append(chunk)
+            }
+
+            let result = buffer.prefix(length)
+            buffer.removeFirst(length)
+            return Data(result)
+        }
+
+        private static func receive(_ connection: NWConnection) async throws -> Data {
+            try await withCheckedThrowingContinuation { continuation in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else if let data, !data.isEmpty {
+                        continuation.resume(returning: data)
+                    } else if isComplete {
+                        continuation.resume(throwing: PitlaneError("TCP 弹幕服务器已关闭连接。"))
+                    } else {
+                        continuation.resume(returning: Data())
+                    }
+                }
+            }
+        }
+    }
+
     private func processWebSocketPayload(_ payload: Data) {
         if !tryProcessNestedPackets(payload) {
             publishMessages(payload)
@@ -429,10 +612,7 @@ final class BilibiliWebRoomClient {
             case 2:
                 processDecompressed(try Self.decompressZlib(payload))
             case 3:
-                if !warnedBrotliUnsupported {
-                    warnedBrotliUnsupported = true
-                    log.warn("收到 Brotli 弹幕包，macOS 原生版当前优先请求 zlib 协议，已跳过该包。")
-                }
+                processDecompressed(try Self.decompressBrotli(payload))
             default:
                 break
             }
@@ -651,6 +831,14 @@ final class BilibiliWebRoomClient {
     }
 
     private static func decompressZlib(_ data: Data) throws -> Data {
+        try decompress(data, algorithm: COMPRESSION_ZLIB, label: "zlib")
+    }
+
+    private static func decompressBrotli(_ data: Data) throws -> Data {
+        try decompress(data, algorithm: COMPRESSION_BROTLI, label: "Brotli")
+    }
+
+    private static func decompress(_ data: Data, algorithm: compression_algorithm, label: String) throws -> Data {
         var capacity = max(data.count * 4, 64 * 1024)
         let maxCapacity = 32 * 1024 * 1024
 
@@ -669,7 +857,7 @@ final class BilibiliWebRoomClient {
                         inputBase,
                         data.count,
                         nil,
-                        COMPRESSION_ZLIB
+                        algorithm
                     )
                 }
             }
@@ -682,7 +870,7 @@ final class BilibiliWebRoomClient {
             capacity *= 2
         }
 
-        throw PitlaneError("zlib 解压失败。")
+        throw PitlaneError("\(label) 解压失败。")
     }
 }
 
