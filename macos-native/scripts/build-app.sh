@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 APP_DIR="$ROOT_DIR/build/PitlaneDanmaku.app"
 BINARY_NAME="PitlaneDanmakuMac"
+VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
+BUILD_NUMBER="${PITLANE_BUILD:-$(git -C "$REPO_DIR" rev-list --count HEAD 2>/dev/null || echo 1)}"
 
 cd "$ROOT_DIR"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$ROOT_DIR/.build/module-cache}"
@@ -18,7 +20,7 @@ cp "$ROOT_DIR/.build/release/$BINARY_NAME" "$APP_DIR/Contents/MacOS/$BINARY_NAME
 cp -R "$REPO_DIR/assets" "$APP_DIR/Contents/Resources/Assets"
 cp "$REPO_DIR/assets/icon.icns" "$APP_DIR/Contents/Resources/icon.icns"
 
-cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -33,17 +35,27 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <string>6.0</string>
   <key>CFBundleIconFile</key>
   <string>icon</string>
+  <key>CFBundleDisplayName</key>
+  <string>Pitlane Danmaku</string>
   <key>CFBundleName</key>
   <string>Pitlane Danmaku</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$BUILD_NUMBER</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.video</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 FoxBai</string>
   <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticTermination</key>
+  <true/>
+  <key>NSSupportsSuddenTermination</key>
   <true/>
 </dict>
 </plist>

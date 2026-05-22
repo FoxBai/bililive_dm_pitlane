@@ -107,4 +107,21 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertEqual(messages[0].userId, 42)
         XCTAssertTrue(messages[0].id.hasPrefix("history:"))
     }
+
+    func testSettingsStoreDecodesLegacySettingsAndEncodesEnvelope() throws {
+        var legacy = AppSettings()
+        legacy.obsPort = 80
+        legacy.roomInput = "  https://live.bilibili.com/123  "
+        let legacyData = try JSONEncoder().encode(legacy)
+
+        let migrated = try SettingsStore.decodeSettings(from: legacyData)
+
+        XCTAssertEqual(migrated.obsPort, 1024)
+        XCTAssertEqual(migrated.roomInput, "https://live.bilibili.com/123")
+
+        let envelopeData = try SettingsStore.encodeSettings(migrated)
+        let envelope = try JSONSerialization.jsonObject(with: envelopeData) as? [String: Any]
+        XCTAssertEqual(envelope?["schemaVersion"] as? Int, 1)
+        XCTAssertNotNil(envelope?["settings"])
+    }
 }

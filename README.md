@@ -85,7 +85,7 @@ bash scripts/smoke-app.sh
 bash scripts/package-dmg.sh
 ```
 
-macOS 版使用 Swift / AppKit，复用 Windows Native 的 B 站连接、消息管线、OBS 输出和赛车展示语义。发布脚本支持本机 ad-hoc codesign；配置 `CODE_SIGN_IDENTITY` 和 `NOTARY_PROFILE` 后可走 Developer ID 签名、公证和 stapler。
+macOS 版使用 Swift / AppKit，复用 Windows Native 的 B 站连接、消息管线、OBS 输出和赛车展示语义。发布脚本支持本机 ad-hoc codesign；配置 `CODE_SIGN_IDENTITY` 和 `NOTARY_PROFILE` 后可走 Developer ID 签名、公证和 stapler。版本号来自 `macos-native/VERSION`，DMG 会包含背景图、Applications 快捷方式和使用说明。
 
 ## Windows Lite Native 方向
 

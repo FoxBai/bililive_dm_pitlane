@@ -1,18 +1,16 @@
 import Foundation
 
 enum SettingsStore {
+    private static let currentSchemaVersion = 1
+
     static var settingsURL: URL {
-        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return root.appendingPathComponent("PitlaneDanmaku", isDirectory: true)
-            .appendingPathComponent("settings-macos.json")
+        AppPaths.settingsURL
     }
 
     static func load() -> AppSettings {
         do {
             let data = try Data(contentsOf: settingsURL)
-            var settings = try JSONDecoder().decode(AppSettings.self, from: data)
-            settings.normalize()
-            return settings
+            return try decodeSettings(from: data)
         } catch {
             var settings = AppSettings()
             settings.normalize()
@@ -26,11 +24,41 @@ enum SettingsStore {
             normalized.normalize()
             let directory = settingsURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(normalized).write(to: settingsURL, options: .atomic)
+            try encodeSettings(normalized).write(to: settingsURL, options: .atomic)
         } catch {
             // Settings persistence should never interrupt the overlay pipeline.
         }
+    }
+
+    static func decodeSettings(from data: Data) throws -> AppSettings {
+        let decoder = JSONDecoder()
+
+        if let envelope = try? decoder.decode(SettingsEnvelope.self, from: data),
+           envelope.schemaVersion <= currentSchemaVersion {
+            var settings = envelope.settings
+            settings.normalize()
+            return settings
+        }
+
+        var legacySettings = try decoder.decode(AppSettings.self, from: data)
+        legacySettings.normalize()
+        return legacySettings
+    }
+
+    static func encodeSettings(_ settings: AppSettings) throws -> Data {
+        var normalized = settings
+        normalized.normalize()
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(SettingsEnvelope(
+            schemaVersion: currentSchemaVersion,
+            settings: normalized
+        ))
+    }
+
+    private struct SettingsEnvelope: Codable {
+        var schemaVersion: Int
+        var settings: AppSettings
     }
 }

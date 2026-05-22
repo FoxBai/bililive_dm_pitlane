@@ -31,6 +31,16 @@ open build/PitlaneDanmaku.app
 
 打包脚本会把仓库根目录的 `assets` 复制进 `PitlaneDanmaku.app/Contents/Resources/Assets`，因此分发 `.app` 时不依赖源码目录。
 
+版本号来自 `macos-native/VERSION`。`CFBundleVersion` 默认使用当前 Git 提交数量，也可以通过 `PITLANE_BUILD=123 bash scripts/build-app.sh` 指定。
+
+设置文件默认写入：
+
+```text
+~/Library/Application Support/PitlaneDanmaku/settings-macos.json
+```
+
+当前设置文件使用带 `schemaVersion` 的 envelope 保存；旧版直接保存的 `AppSettings` JSON 会在读取时自动兼容。
+
 ## 冒烟验证
 
 ```bash
@@ -53,6 +63,8 @@ bash scripts/package-dmg.sh
 
 默认会生成 `dist/PitlaneDanmaku-0.1.0-macOS.dmg`，并对 `.app` 做 ad-hoc codesign，适合本机验证和内部传递。
 
+DMG 会包含背景图、`Applications` 快捷方式和 `使用说明.txt`。CI 或无 Finder 会话环境会跳过 Finder 图标布局；本地发布可通过默认脚本写入布局。
+
 如果要做正式分发，先在钥匙串中准备 Developer ID Application 证书和 notarytool keychain profile，然后运行：
 
 ```bash
@@ -60,6 +72,14 @@ CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 NOTARY_PROFILE="pitlane-notary" \
 bash scripts/package-dmg.sh
 ```
+
+macOS 崩溃日志由系统写入：
+
+```text
+~/Library/Logs/DiagnosticReports
+```
+
+应用菜单中的“帮助”里提供了打开诊断目录和崩溃日志目录的入口。
 
 ## 图标
 
